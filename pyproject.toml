@@ -1,12 +1,14 @@
 [project]
 name = "langgraph-devops-poc"
 version = "0.1.0"
-description = "Single-node LangGraph PoC for syntax validation"
+description = "Two-node LangGraph writer/validator PoC with MCP filesystem integration"
 requires-python = ">=3.11"
 dependencies = [
   "langgraph>=0.2.40",
   "langchain-openai>=0.2.10",
-  "python-dotenv>=1.0.1"
+  "python-dotenv>=1.0.1",
+  "httpx>=0.27.0",
+  "pyyaml>=6.0.2"
 ]
 
 [project.scripts]
