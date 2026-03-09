@@ -38,6 +38,7 @@ class FilesystemMCPClient:
         self._ids = itertools.count(1)
         self._endpoint_candidates = self._build_endpoint_candidates(self.base_url)
         self._active_endpoint = self._endpoint_candidates[0]
+        self._session_id: str | None = None
         self._binding = FilesystemToolBinding(
             read_tool=read_tool_name or os.getenv("MCP_FS_READ_TOOL", "read_file"),
             write_tool=write_tool_name or os.getenv("MCP_FS_WRITE_TOOL", "write_file"),
@@ -60,7 +61,7 @@ class FilesystemMCPClient:
 
     def discover_tools(self) -> FilesystemToolBinding:
         logger.info("mcp_tool_discovery_start")
-        response = self._rpc("tools/list", {})
+        response = self._rpc("tools/list")
         tools = response.get("tools", [])
         names = {tool.get("name") for tool in tools if isinstance(tool, dict)}
 
@@ -121,18 +122,26 @@ class FilesystemMCPClient:
             return f"{self.workspace_prefix.rstrip('/')}/{path.lstrip('/')}"
         return path
 
-    def _rpc(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+    def _rpc(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         payload = {
             "jsonrpc": "2.0",
             "id": next(self._ids),
             "method": method,
-            "params": params,
         }
+        if params is not None:
+            payload["params"] = params
 
         last_error: Exception | None = None
         for endpoint in self._endpoint_candidates:
+            headers = {
+                "Accept": "application/json, text/event-stream",
+                "Content-Type": "application/json",
+            }
+            if self._session_id:
+                headers["mcp-session-id"] = self._session_id
+
             try:
-                response = self._client.post(endpoint, json=payload)
+                response = self._client.post(endpoint, json=payload, headers=headers)
                 response.raise_for_status()
                 body = response.json()
             except httpx.HTTPStatusError as exc:
@@ -152,6 +161,11 @@ class FilesystemMCPClient:
                 logger.info("mcp_endpoint_selected endpoint=%s", endpoint)
                 self._active_endpoint = endpoint
                 self.base_url = endpoint
+
+            session_id = response.headers.get("mcp-session-id")
+            if session_id and session_id != self._session_id:
+                self._session_id = session_id
+                logger.info("mcp_session_established session_id_set=true")
             break
         else:
             raise MCPClientError(f"MCP request failed for method '{method}': {last_error}")
