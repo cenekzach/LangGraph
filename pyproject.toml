@@ -1,0 +1,17 @@
+[project]
+name = "langgraph-devops-poc"
+version = "0.1.0"
+description = "Single-node LangGraph PoC for syntax validation"
+requires-python = ">=3.11"
+dependencies = [
+  "langgraph>=0.2.40",
+  "langchain-openai>=0.2.10",
+  "python-dotenv>=1.0.1"
+]
+
+[project.scripts]
+langgraph-devops-poc = "poc_single_node:main"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
