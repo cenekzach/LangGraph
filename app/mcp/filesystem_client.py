@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import itertools
+import json
 import logging
 import os
 from dataclasses import dataclass
@@ -143,7 +144,7 @@ class FilesystemMCPClient:
             try:
                 response = self._client.post(endpoint, json=payload, headers=headers)
                 response.raise_for_status()
-                body = response.json()
+                body = self._parse_rpc_body(response, payload["id"])
             except httpx.HTTPStatusError as exc:
                 last_error = exc
                 if exc.response.status_code == 404 and endpoint != self._endpoint_candidates[-1]:
@@ -198,6 +199,38 @@ class FilesystemMCPClient:
             if candidate in names:
                 return candidate
         return None
+
+    @staticmethod
+    def _parse_rpc_body(response: httpx.Response, request_id: int) -> dict[str, Any]:
+        content_type = response.headers.get("content-type", "")
+        if "text/event-stream" not in content_type:
+            return response.json()
+
+        messages: list[dict[str, Any]] = []
+        for raw_line in response.text.splitlines():
+            line = raw_line.strip()
+            if not line.startswith("data:"):
+                continue
+            data = line.removeprefix("data:").strip()
+            if not data:
+                continue
+            try:
+                parsed = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict):
+                messages.append(parsed)
+
+        for message in messages:
+            if message.get("id") == request_id:
+                return message
+        for message in messages:
+            if "result" in message or "error" in message:
+                return message
+
+        raise MCPClientError(
+            "MCP response was event-stream but did not include a JSON-RPC result payload"
+        )
 
     @staticmethod
     def _extract_content(result: dict[str, Any]) -> str:
