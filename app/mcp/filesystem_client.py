@@ -21,6 +21,7 @@ class MCPClientError(RuntimeError):
 class FilesystemToolBinding:
     read_tool: str
     write_tool: str
+    create_directory_tool: str | None = None
 
 
 class FilesystemMCPClient:
@@ -43,6 +44,7 @@ class FilesystemMCPClient:
         self._binding = FilesystemToolBinding(
             read_tool=read_tool_name or os.getenv("MCP_FS_READ_TOOL", "read_file"),
             write_tool=write_tool_name or os.getenv("MCP_FS_WRITE_TOOL", "write_file"),
+            create_directory_tool=os.getenv("MCP_FS_CREATE_DIRECTORY_TOOL", "create_directory"),
         )
 
     def connect(self) -> None:
@@ -68,27 +70,41 @@ class FilesystemMCPClient:
 
         read_tool = self._binding.read_tool
         write_tool = self._binding.write_tool
+        create_directory_tool = self._binding.create_directory_tool
 
         if read_tool not in names:
             read_tool = self._find_candidate(names, ["read_file", "filesystem_read", "read"])
         if write_tool not in names:
             write_tool = self._find_candidate(names, ["write_file", "filesystem_write", "write"])
+        if create_directory_tool not in names:
+            create_directory_tool = self._find_candidate(
+                names,
+                ["create_directory", "mkdir", "make_directory", "filesystem_mkdir"],
+            )
 
         if not read_tool or not write_tool:
             raise MCPClientError(
                 f"Unable to bind filesystem tools. Available tools: {sorted(names)}"
             )
 
-        self._binding = FilesystemToolBinding(read_tool=read_tool, write_tool=write_tool)
+        self._binding = FilesystemToolBinding(
+            read_tool=read_tool,
+            write_tool=write_tool,
+            create_directory_tool=create_directory_tool,
+        )
         logger.info(
-            "mcp_tool_binding_success read_tool=%s write_tool=%s",
+            "mcp_tool_binding_success read_tool=%s write_tool=%s create_directory_tool=%s",
             self._binding.read_tool,
             self._binding.write_tool,
+            self._binding.create_directory_tool,
         )
         return self._binding
 
     def write_file(self, path: str, content: str) -> None:
         full_path = self._normalize_path(path)
+        parent_dir = os.path.dirname(full_path)
+        if parent_dir and parent_dir not in (".", "/"):
+            self.create_directory(parent_dir)
         logger.info("filesystem_write_attempt path=%s", full_path)
         result = self._rpc(
             "tools/call",
@@ -100,6 +116,23 @@ class FilesystemMCPClient:
         if result.get("isError"):
             raise MCPClientError(f"Filesystem write failed: {result}")
         logger.info("filesystem_write_success path=%s", full_path)
+
+    def create_directory(self, path: str) -> None:
+        if not self._binding.create_directory_tool:
+            logger.debug("filesystem_create_directory_skipped reason=no_tool_bound path=%s", path)
+            return
+
+        logger.info("filesystem_create_directory_attempt path=%s", path)
+        result = self._rpc(
+            "tools/call",
+            {
+                "name": self._binding.create_directory_tool,
+                "arguments": {"path": path},
+            },
+        )
+        if result.get("isError"):
+            raise MCPClientError(f"Filesystem create directory failed: {result}")
+        logger.info("filesystem_create_directory_success path=%s", path)
 
     def read_file(self, path: str) -> str:
         full_path = self._normalize_path(path)
