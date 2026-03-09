@@ -1,63 +1,94 @@
-# LangGraph DevOps PoC (Single Node Validation)
+# LangGraph DevOps PoC (Two-Node Writer + Validator with MCP Filesystem)
 
-This repository contains a minimal **LangGraph proof of concept** for a DevOps helper agent with one purpose in this iteration: **syntax validation**.
+This repository now runs a **two-node LangGraph workflow** with an MCP filesystem integration.
 
-## What this PoC does
+## Workflow
 
-- Builds a LangGraph workflow with exactly **one node**: `validation_node`.
-- Sends code/config text to a model endpoint (OpenAI-compatible, such as local vLLM).
-- Returns a focused syntax report:
-  - detected format,
-  - syntax issues,
-  - corrected snippet,
-  - quick local validation commands.
+```text
+START -> writer -> validator
+validator -> writer (when validation fails and attempts remain)
+validator -> END (when validation passes)
+validator -> END (when max attempts is reached)
+```
 
-## Local setup (Ubuntu VM)
+### Node 1: `writer`
+- Takes the user request.
+- Generates code or structured data using the configured model.
+- Saves the artifact through the MCP filesystem server (`tools/call` write tool).
+- Returns metadata only (path/type/summary/attempt count), not the full artifact body.
 
-1. Bootstrap local virtualenv + dependencies (recommended):
+### Node 2: `validator`
+- Reads the saved file back through the MCP filesystem server (`tools/call` read tool).
+- Validates the persisted content by type:
+  - Python: syntax via `ast.parse`
+  - JSON: parse with `json.loads`
+  - YAML: parse with `yaml.safe_load`
+  - CSV: parse and check consistent column counts
+  - Markdown/Text: non-empty + extension consistency checks
+- Produces actionable feedback when validation fails.
+
+## MCP filesystem integration
+
+The MCP adapter is in `app/mcp/filesystem_client.py` and handles:
+- MCP connect/initialize attempt,
+- tool discovery (`tools/list`) and binding,
+- file write calls,
+- file read calls,
+- clear exceptions for transport/tool errors.
+
+This module is intentionally thin and explicit so additional MCP servers/adapters can be added later.
+
+## Local setup
+
+1. Bootstrap venv + dependencies:
 
    ```bash
    source scripts/setup_venv.sh
    ```
 
-   This script is idempotent: it creates `.venv` if missing, activates it, upgrades packaging tools, and installs project dependencies.
-
 2. Configure environment variables:
 
    ```bash
    cp env.example .env
-   # then edit .env if needed
+   # edit values as needed
    ```
 
-3. Run the single-node validation flow:
+3. Run the graph:
 
    ```bash
-   python3 poc_single_node.py "{\"a\": 1,}" --format-hint json
-=======
+   python3 poc_single_node.py "Create a valid JSON file describing a web service"
    ```
 
-## vLLM notes
+## Configuration (environment variables)
 
-This PoC uses `ChatOpenAI` with OpenAI-compatible settings:
+- `OPENAI_API_BASE`, `OPENAI_API_KEY`, `OPENAI_MODEL`
+- `MCP_FS_BASE_URL` (HTTP endpoint for filesystem MCP server)
+- `MCP_FS_READ_TOOL`, `MCP_FS_WRITE_TOOL`
+- `MCP_WORKSPACE_PREFIX` (optional path prefix)
+- `MAX_ATTEMPTS`
+- `LOG_LEVEL` (default `INFO`)
 
-- `OPENAI_API_BASE` (default: `http://127.0.0.1:8000/v1`)
-- `OPENAI_API_KEY` (default: `local-dev`)
-- `OPENAI_MODEL` (default: `meta-llama/Llama-3.1-8B-Instruct`)
+## Retry behavior
 
-If your vLLM endpoint or model name differs, update `.env`.
+- Every validator failure writes actionable feedback into state.
+- The next writer attempt incorporates that feedback.
+- The graph stops with:
+  - `success` when validation passes,
+  - `failed` when attempts hit `MAX_ATTEMPTS`.
 
-## Files
+## Logs (`docker logs` friendly)
 
-- `poc_single_node.py`: single-node graph and CLI entrypoint.
-- `env.example`: local vLLM/OpenAI-compatible environment template.
-- `pyproject.toml`: dependencies and console script (`langgraph-devops-poc`).
+The app uses Python `logging` with concise structured-style messages to stdout, including:
+- graph start,
+- writer start and selected path,
+- MCP connect + tool discovery,
+- filesystem write/read attempts and outcomes,
+- validator pass/fail,
+- retry decisions,
+- final graph outcome.
 
-## Next step for MCP integration
+Run in Docker and inspect with:
 
-Once this baseline works, the next step is to connect MCP tools so the graph can fetch artifacts (CI logs, Kubernetes events, repo files) and validate snippets directly from those sources.
-
-## Questions to shape the next iteration
-
-1. Which model should be the default for your RTX4090 setup?
-2. Which MCP integration should we add first (GitHub, Kubernetes, CI logs, ticketing)?
-3. Should the validation result also be emitted as strict JSON for downstream automation?
+```bash
+docker logs <container_name>
+```
