@@ -14,30 +14,26 @@ This repository contains a minimal **LangGraph proof of concept** for a DevOps h
 
 ## Local setup (Ubuntu VM)
 
-1. Create and activate a virtualenv:
+1. Bootstrap local virtualenv + dependencies (recommended):
 
    ```bash
-   python3 -m venv .venv
-   source .venv/bin/activate
+   source scripts/setup_venv.sh
    ```
 
-2. Install dependencies:
+   This script is idempotent: it creates `.venv` if missing, activates it, upgrades packaging tools, and installs project dependencies.
+
+2. Configure environment variables:
 
    ```bash
-   pip install -e .
-   ```
-
-3. Configure environment variables:
-
-   ```bash
-   cp .env.example .env
+   cp env.example .env
    # then edit .env if needed
    ```
 
-4. Run the single-node validation flow:
+3. Run the single-node validation flow:
 
    ```bash
-   python poc_single_node.py "{\"a\": 1,}" --format-hint json
+   python3 poc_single_node.py "{\"a\": 1,}" --format-hint json
+=======
    ```
 
 ## vLLM notes
@@ -53,7 +49,7 @@ If your vLLM endpoint or model name differs, update `.env`.
 ## Files
 
 - `poc_single_node.py`: single-node graph and CLI entrypoint.
-- `.env.example`: local vLLM/OpenAI-compatible environment template.
+- `env.example`: local vLLM/OpenAI-compatible environment template.
 - `pyproject.toml`: dependencies and console script (`langgraph-devops-poc`).
 
 ## Next step for MCP integration
