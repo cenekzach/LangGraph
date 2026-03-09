@@ -5,6 +5,7 @@ import logging
 import os
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
@@ -35,6 +36,8 @@ class FilesystemMCPClient:
         self.workspace_prefix = workspace_prefix.strip()
         self._client = httpx.Client(timeout=self.timeout_seconds)
         self._ids = itertools.count(1)
+        self._endpoint_candidates = self._build_endpoint_candidates(self.base_url)
+        self._active_endpoint = self._endpoint_candidates[0]
         self._binding = FilesystemToolBinding(
             read_tool=read_tool_name or os.getenv("MCP_FS_READ_TOOL", "read_file"),
             write_tool=write_tool_name or os.getenv("MCP_FS_WRITE_TOOL", "write_file"),
@@ -125,18 +128,55 @@ class FilesystemMCPClient:
             "method": method,
             "params": params,
         }
-        try:
-            response = self._client.post(self.base_url, json=payload)
-            response.raise_for_status()
-            body = response.json()
-        except Exception as exc:
-            raise MCPClientError(f"MCP request failed for method '{method}': {exc}") from exc
+
+        last_error: Exception | None = None
+        for endpoint in self._endpoint_candidates:
+            try:
+                response = self._client.post(endpoint, json=payload)
+                response.raise_for_status()
+                body = response.json()
+            except httpx.HTTPStatusError as exc:
+                last_error = exc
+                if exc.response.status_code == 404 and endpoint != self._endpoint_candidates[-1]:
+                    logger.warning(
+                        "mcp_endpoint_not_found endpoint=%s trying_fallback=true",
+                        endpoint,
+                    )
+                    continue
+                raise MCPClientError(f"MCP request failed for method '{method}': {exc}") from exc
+            except Exception as exc:
+                last_error = exc
+                raise MCPClientError(f"MCP request failed for method '{method}': {exc}") from exc
+
+            if endpoint != self._active_endpoint:
+                logger.info("mcp_endpoint_selected endpoint=%s", endpoint)
+                self._active_endpoint = endpoint
+                self.base_url = endpoint
+            break
+        else:
+            raise MCPClientError(f"MCP request failed for method '{method}': {last_error}")
 
         if "error" in body:
             raise MCPClientError(f"MCP error for method '{method}': {body['error']}")
         if "result" not in body:
             raise MCPClientError(f"MCP malformed response for method '{method}': {body}")
         return body["result"]
+
+    @staticmethod
+    def _build_endpoint_candidates(base_url: str) -> list[str]:
+        normalized = base_url.rstrip("/")
+        parsed = urlsplit(normalized)
+        path = parsed.path.rstrip("/")
+        if path and path != "":
+            return [normalized]
+
+        candidates: list[str] = []
+        for suffix in ("", "/mcp", "/rpc"):
+            candidate_path = suffix or "/"
+            candidate = urlunsplit(parsed._replace(path=candidate_path)).rstrip("/")
+            if candidate not in candidates:
+                candidates.append(candidate)
+        return candidates
 
     @staticmethod
     def _find_candidate(names: set[str], candidates: list[str]) -> str | None:
