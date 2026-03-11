@@ -1,94 +1,108 @@
-# LangGraph DevOps PoC (Two-Node Writer + Validator with MCP Filesystem)
+# LangGraph Requirements-First MCP Workflow
 
-This repository now runs a **two-node LangGraph workflow** with an MCP filesystem integration.
+This project now runs a compact **requirements-first multi-node LangGraph workflow** designed for local models with smaller context windows.
 
-## Workflow
+## Graph structure
 
 ```text
-START -> writer -> validator
-validator -> writer (when validation fails and attempts remain)
-validator -> END (when validation passes)
-validator -> END (when max attempts is reached)
+START
+ -> requirements_author
+ -> requirements_reviewer
+
+requirements_reviewer
+ -> requirements_author (requirements fail)
+ -> implementor (requirements pass)
+
+implementor
+ -> tester
+
+tester
+ -> implementor (syntax/tests fail)
+ -> product_reviewer (syntax/tests pass)
+
+product_reviewer
+ -> implementor (implementation mismatch)
+ -> requirements_author (requirements need revision)
+ -> END (all good)
 ```
 
-### Node 1: `writer`
-- Takes the user request.
-- Generates code or structured data using the configured model.
-- Saves the artifact through the MCP filesystem server (`tools/call` write tool).
-- Returns metadata only (path/type/summary/attempt count), not the full artifact body.
+A `state_summarizer` node is used for explicit failure exits after retry caps and writes a concise loop snapshot.
 
-### Node 2: `validator`
-- Reads the saved file back through the MCP filesystem server (`tools/call` read tool).
-- Validates the persisted content by type:
-  - Python: syntax via `ast.parse`
-  - JSON: parse with `json.loads`
-  - YAML: parse with `yaml.safe_load`
-  - CSV: parse and check consistent column counts
-  - Markdown/Text: non-empty + extension consistency checks
-- Produces actionable feedback when validation fails.
+## Why requirements are Markdown
 
-## MCP filesystem integration
+Requirements are written to `/workspace/artifacts/requirements.current.md` as human-readable Markdown so:
+- operators can inspect intent quickly,
+- later nodes can consume a short summary instead of full chat history,
+- acceptance criteria and edge cases stay explicit and testable.
 
-The MCP adapter is in `app/mcp/filesystem_client.py` and handles:
-- MCP connect/initialize attempt,
-- tool discovery (`tools/list`) and binding,
-- file write calls,
-- file read calls,
-- clear exceptions for transport/tool errors.
+## MCP integrations
 
-This module is intentionally thin and explicit so additional MCP servers/adapters can be added later.
+### Filesystem MCP (`app/mcp/filesystem_client.py`)
+Used by nodes to read/write artifacts and app files:
+- requirements markdown,
+- source files,
+- test files,
+- summaries:
+  - `/workspace/artifacts/implementation.summary.json`
+  - `/workspace/artifacts/test.summary.json`
+  - `/workspace/artifacts/review.summary.json`
+  - `/workspace/artifacts/loop.summary.md` (failure summary).
 
-## Local setup
+### Python executor MCP (`app/mcp/python_executor_client.py`)
+Used by `tester` to:
+- run Python syntax checks via a compact AST script,
+- execute tests (`python -m pytest -q`),
+- return normalized stdout/stderr/exit_code for routing.
 
-1. Bootstrap venv + dependencies:
+## Retry loops
 
-   ```bash
-   source scripts/setup_venv.sh
-   ```
+Default caps:
+- requirements loop: `MAX_REQUIREMENTS_ATTEMPTS=2`
+- implement/test loop: `MAX_IMPLEMENTATION_ATTEMPTS=4`
+- product review loop: `MAX_REVIEW_ATTEMPTS=2`
 
-2. Configure environment variables:
+If a cap is exceeded, workflow ends `failed` and writes loop summary artifacts.
 
-   ```bash
-   cp env.example .env
-   # edit values as needed
-   ```
+## Context-window strategy
 
-3. Run the graph:
+To stay practical for ~16k local model contexts, each node prompt is intentionally small:
+- only uses minimal state fields needed for that node,
+- reads targeted artifact files (not full repo dumps),
+- truncates long feedback/log strings,
+- stores bulky details in file artifacts instead of graph state.
 
-   ```bash
-   python3 poc_single_node.py "Create a valid JSON file describing a web service"
-   ```
-
-## Configuration (environment variables)
-
-- `OPENAI_API_BASE`, `OPENAI_API_KEY`, `OPENAI_MODEL`
-- `MCP_FS_BASE_URL` (HTTP endpoint for filesystem MCP server)
-- `MCP_FS_READ_TOOL`, `MCP_FS_WRITE_TOOL`
-- `MCP_WORKSPACE_PREFIX` (optional path prefix)
-- `MAX_ATTEMPTS`
-- `LOG_LEVEL` (default `INFO`)
-
-## Retry behavior
-
-- Every validator failure writes actionable feedback into state.
-- The next writer attempt incorporates that feedback.
-- The graph stops with:
-  - `success` when validation passes,
-  - `failed` when attempts hit `MAX_ATTEMPTS`.
+Prompt builders are in `app/prompts/builders.py`.
 
 ## Logs (`docker logs` friendly)
 
-The app uses Python `logging` with concise structured-style messages to stdout, including:
-- graph start,
-- writer start and selected path,
-- MCP connect + tool discovery,
-- filesystem write/read attempts and outcomes,
-- validator pass/fail,
-- retry decisions,
-- final graph outcome.
+Structured logs are emitted for:
+- node start/end,
+- routing decisions,
+- MCP reads/writes,
+- syntax/test outcomes,
+- retry cap exits,
+- final workflow result.
 
-Run in Docker and inspect with:
+Examples:
+- `requirements_author:start`
+- `tester:syntax ok`
+- `router:tester -> implementor`
+- `workflow:end status=success`
+
+## Run
 
 ```bash
-docker logs <container_name>
+source scripts/setup_venv.sh
+cp env.example .env
+python3 poc_single_node.py "Build a simple calculator app"
 ```
+
+## Example flow for “Build a simple calculator app”
+
+1. `requirements_author` writes concise calculator requirements markdown.
+2. `requirements_reviewer` checks coherence and testability.
+3. `implementor` writes calculator source files through filesystem MCP.
+4. `tester` writes tests and executes syntax + pytest through Python executor MCP.
+5. Failing tests route back to `implementor` with compact failure summary.
+6. Passing tests route to `product_reviewer` for requirements-intent alignment.
+7. Workflow ends success only when tests pass and product review approves.
