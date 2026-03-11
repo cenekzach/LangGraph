@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 
 from langchain_openai import ChatOpenAI
@@ -42,13 +41,12 @@ def tester_node(
         test_paths.append(path)
         logger.info("tester:wrote %s", path)
 
-    syntax_script = _syntax_script(state["source_paths"] + test_paths)
-    syntax_result = pyexec_client.execute_python(syntax_script)
+    syntax_paths = state["source_paths"] + test_paths
+    syntax_result = pyexec_client.syntax_check(syntax_paths)
     syntax_ok = int(syntax_result.get("exit_code", 1)) == 0
     logger.info("tester:syntax %s", "ok" if syntax_ok else "failed")
 
-    test_cmd = "python -m pytest -q" if test_paths else "python -m pytest -q"
-    test_result = pyexec_client.execute_command(test_cmd)
+    test_result = pyexec_client.run_tests("python -m pytest -q")
     tests_ok = syntax_ok and int(test_result.get("exit_code", 1)) == 0
     logger.info("tester:pytest %s", "passed" if tests_ok else "failed")
 
@@ -75,21 +73,6 @@ def tester_node(
         "test_summary": payload["test_summary"],
         "latest_failure_summary": failure_summary,
     }
-
-
-def _syntax_script(paths: list[str]) -> str:
-    quoted = json.dumps(paths)
-    return f"""
-import ast
-from pathlib import Path
-paths = {quoted}
-for path in paths:
-    p = Path(path)
-    if p.suffix != '.py' or not p.exists():
-        continue
-    ast.parse(p.read_text())
-print('syntax ok')
-""".strip()
 
 
 def _compact(text: str, limit: int = 700) -> str:

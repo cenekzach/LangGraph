@@ -12,7 +12,9 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class PythonExecutorToolBinding:
-    execute_tool: str
+    run_script_tool: str
+    syntax_check_tool: str
+    run_tests_tool: str
 
 
 class PythonExecutorMCPClient(FilesystemMCPClient):
@@ -20,11 +22,18 @@ class PythonExecutorMCPClient(FilesystemMCPClient):
         self,
         base_url: str,
         timeout_seconds: float = 30.0,
-        execute_tool_name: str | None = None,
+        run_script_tool_name: str | None = None,
+        syntax_check_tool_name: str | None = None,
+        run_tests_tool_name: str | None = None,
     ) -> None:
         super().__init__(base_url=base_url, timeout_seconds=timeout_seconds)
         self._exec_binding = PythonExecutorToolBinding(
-            execute_tool=execute_tool_name or os.getenv("MCP_PYTHON_EXEC_TOOL", "execute_python"),
+            run_script_tool=run_script_tool_name
+            or os.getenv("MCP_PYTHON_RUN_SCRIPT_TOOL", "python_run_script"),
+            syntax_check_tool=syntax_check_tool_name
+            or os.getenv("MCP_PYTHON_SYNTAX_CHECK_TOOL", "python_syntax_check"),
+            run_tests_tool=run_tests_tool_name
+            or os.getenv("MCP_PYTHON_RUN_TESTS_TOOL", "python_run_tests"),
         )
 
     def discover_tools(self) -> PythonExecutorToolBinding:
@@ -33,33 +42,62 @@ class PythonExecutorMCPClient(FilesystemMCPClient):
         tools = response.get("tools", [])
         names = {tool.get("name") for tool in tools if isinstance(tool, dict)}
 
-        execute_tool = self._exec_binding.execute_tool
-        if execute_tool not in names:
-            execute_tool = self._find_candidate(
+        run_script_tool = self._exec_binding.run_script_tool
+        if run_script_tool not in names:
+            run_script_tool = self._find_candidate(
                 names,
-                ["execute_python", "python_exec", "run_python", "execute", "run_command"],
+                ["python_run_script", "execute_python", "python_exec", "run_python", "execute"],
             )
 
-        if not execute_tool:
-            raise MCPClientError(f"Unable to bind python executor tool. Available: {sorted(names)}")
+        syntax_check_tool = self._exec_binding.syntax_check_tool
+        if syntax_check_tool not in names:
+            syntax_check_tool = self._find_candidate(
+                names,
+                ["python_syntax_check", "syntax_check", "python_check_syntax"],
+            )
 
-        self._exec_binding = PythonExecutorToolBinding(execute_tool=execute_tool)
-        logger.info("python_executor:tool_binding_success execute_tool=%s", execute_tool)
+        run_tests_tool = self._exec_binding.run_tests_tool
+        if run_tests_tool not in names:
+            run_tests_tool = self._find_candidate(
+                names,
+                ["python_run_tests", "run_tests", "pytest", "python_pytest"],
+            )
+
+        if not run_script_tool or not syntax_check_tool or not run_tests_tool:
+            raise MCPClientError(
+                f"Unable to bind python executor tools. Available: {sorted(names)}"
+            )
+
+        self._exec_binding = PythonExecutorToolBinding(
+            run_script_tool=run_script_tool,
+            syntax_check_tool=syntax_check_tool,
+            run_tests_tool=run_tests_tool,
+        )
+        logger.info(
+            "python_executor:tool_binding_success run_script_tool=%s syntax_check_tool=%s run_tests_tool=%s",
+            run_script_tool,
+            syntax_check_tool,
+            run_tests_tool,
+        )
         return self._exec_binding
 
     def execute_python(self, code: str) -> dict[str, Any]:
         logger.info("python_executor:execute_python_start size=%s", len(code))
-        return self._call_execute({"code": code})
+        return self._call_tool(self._exec_binding.run_script_tool, {"code": code})
 
-    def execute_command(self, command: str) -> dict[str, Any]:
-        logger.info("python_executor:execute_command_start command=%s", command)
-        return self._call_execute({"command": command})
+    def syntax_check(self, paths: list[str]) -> dict[str, Any]:
+        logger.info("python_executor:syntax_check_start file_count=%s", len(paths))
+        return self._call_tool(self._exec_binding.syntax_check_tool, {"paths": paths})
 
-    def _call_execute(self, arguments: dict[str, Any]) -> dict[str, Any]:
+    def run_tests(self, command: str = "python -m pytest -q") -> dict[str, Any]:
+        logger.info("python_executor:run_tests_start command=%s", command)
+        return self._call_tool(self._exec_binding.run_tests_tool, {"command": command})
+
+    def _call_tool(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         result = self._rpc(
             "tools/call",
             {
-                "name": self._exec_binding.execute_tool,
+                "name": tool_name,
                 "arguments": arguments,
             },
         )
