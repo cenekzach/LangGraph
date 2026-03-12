@@ -27,7 +27,8 @@ def product_reviewer_node(
             product_review_prompt(
                 state["requirements_summary"],
                 state["implementation_summary"],
-                state["test_summary"],
+                state["deterministic_test_summary"],
+                state["playtest_summary"],
             ),
             schema_name="product_review",
             node_name="product_reviewer",

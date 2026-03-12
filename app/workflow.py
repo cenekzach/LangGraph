@@ -10,12 +10,14 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 
 from app.graph.nodes import (
+    change_planner_node,
     implementor_node,
+    playtester_node,
     product_reviewer_node,
-    requirements_author_node,
     requirements_reviewer_node,
     state_summarizer_node,
-    tester_node,
+    test_author_node,
+    test_runner_node,
 )
 from app.graph.state import WorkflowState
 from app.logging_config import configure_logging
@@ -28,32 +30,56 @@ logger = logging.getLogger(__name__)
 def build_graph(llm: ChatOpenAI, fs: FilesystemMCPClient, pyexec: PythonExecutorMCPClient):
     graph = StateGraph(WorkflowState)
 
-    graph.add_node("requirements_author", lambda s: requirements_author_node(s, llm, fs))
+    graph.add_node("change_planner", lambda s: change_planner_node(s, llm, fs))
     graph.add_node("requirements_reviewer", lambda s: requirements_reviewer_node(s, llm, fs))
     graph.add_node("implementor", lambda s: implementor_node(s, llm, fs))
-    graph.add_node("tester", lambda s: tester_node(s, llm, fs, pyexec))
+    graph.add_node("test_author", lambda s: test_author_node(s, llm, fs))
+    graph.add_node("test_runner", lambda s: test_runner_node(s, fs, pyexec))
+    graph.add_node("playtester", lambda s: playtester_node(s, llm, fs, pyexec))
     graph.add_node("product_reviewer", lambda s: product_reviewer_node(s, llm, fs))
     graph.add_node("state_summarizer", lambda s: state_summarizer_node(s, fs))
 
-    graph.add_edge(START, "requirements_author")
-    graph.add_edge("requirements_author", "requirements_reviewer")
-    graph.add_conditional_edges("requirements_reviewer", route_requirements, {
-        "requirements_author": "requirements_author",
-        "implementor": "implementor",
-        "state_summarizer": "state_summarizer",
-    })
-    graph.add_edge("implementor", "tester")
-    graph.add_conditional_edges("tester", route_tester, {
-        "implementor": "implementor",
-        "product_reviewer": "product_reviewer",
-        "state_summarizer": "state_summarizer",
-    })
-    graph.add_conditional_edges("product_reviewer", route_product_review, {
-        "implementor": "implementor",
-        "requirements_author": "requirements_author",
-        "state_summarizer": "state_summarizer",
-        "end": END,
-    })
+    graph.add_edge(START, "change_planner")
+    graph.add_edge("change_planner", "requirements_reviewer")
+    graph.add_conditional_edges(
+        "requirements_reviewer",
+        route_requirements,
+        {
+            "change_planner": "change_planner",
+            "implementor": "implementor",
+            "state_summarizer": "state_summarizer",
+        },
+    )
+    graph.add_edge("implementor", "test_author")
+    graph.add_edge("test_author", "test_runner")
+    graph.add_conditional_edges(
+        "test_runner",
+        route_test_runner,
+        {
+            "implementor": "implementor",
+            "playtester": "playtester",
+            "state_summarizer": "state_summarizer",
+        },
+    )
+    graph.add_conditional_edges(
+        "playtester",
+        route_playtester,
+        {
+            "implementor": "implementor",
+            "product_reviewer": "product_reviewer",
+            "state_summarizer": "state_summarizer",
+        },
+    )
+    graph.add_conditional_edges(
+        "product_reviewer",
+        route_product_review,
+        {
+            "implementor": "implementor",
+            "change_planner": "change_planner",
+            "state_summarizer": "state_summarizer",
+            "end": END,
+        },
+    )
     graph.add_edge("state_summarizer", END)
     return graph.compile()
 
@@ -66,19 +92,31 @@ def route_requirements(state: WorkflowState) -> str:
         logger.info("router:requirements_reviewer -> state_summarizer reason=max_requirements_attempts")
         state["final_status"] = "failed"
         return "state_summarizer"
-    logger.info("router:requirements_reviewer -> requirements_author")
-    return "requirements_author"
+    logger.info("router:requirements_reviewer -> change_planner")
+    return "change_planner"
 
 
-def route_tester(state: WorkflowState) -> str:
+def route_test_runner(state: WorkflowState) -> str:
     if state["tests_ok"]:
-        logger.info("router:tester -> product_reviewer")
-        return "product_reviewer"
+        logger.info("router:test_runner -> playtester")
+        return "playtester"
     if state["implementation_attempts"] >= state["max_implementation_attempts"]:
-        logger.info("router:tester -> state_summarizer reason=max_implementation_attempts")
+        logger.info("router:test_runner -> state_summarizer reason=max_implementation_attempts")
         state["final_status"] = "failed"
         return "state_summarizer"
-    logger.info("router:tester -> implementor")
+    logger.info("router:test_runner -> implementor")
+    return "implementor"
+
+
+def route_playtester(state: WorkflowState) -> str:
+    if state["playtest_ok"]:
+        logger.info("router:playtester -> product_reviewer")
+        return "product_reviewer"
+    if state["playtest_attempts"] >= state["max_playtest_attempts"]:
+        logger.info("router:playtester -> state_summarizer reason=max_playtest_attempts")
+        state["final_status"] = "failed"
+        return "state_summarizer"
+    logger.info("router:playtester -> implementor")
     return "implementor"
 
 
@@ -91,9 +129,9 @@ def route_product_review(state: WorkflowState) -> str:
         logger.info("router:product_reviewer -> state_summarizer reason=max_review_attempts")
         state["final_status"] = "failed"
         return "state_summarizer"
-    if state["product_review_summary"].startswith("requirements_author:"):
-        logger.info("router:product_reviewer -> requirements_author")
-        return "requirements_author"
+    if state["product_review_summary"].startswith("change_planner:"):
+        logger.info("router:product_reviewer -> change_planner")
+        return "change_planner"
     logger.info("router:product_reviewer -> implementor")
     return "implementor"
 
@@ -133,23 +171,30 @@ def main() -> None:
     initial_state: WorkflowState = {
         "task_id": str(uuid.uuid4()),
         "user_request": args.user_request,
+        "latest_user_request": args.user_request,
         "requirements_path": "/workspace/artifacts/requirements.current.md",
         "requirements_summary": "",
+        "change_scope": "{}",
         "requirements_ok": False,
         "requirements_feedback": "",
         "source_paths": [],
         "test_paths": [],
         "implementation_summary": "",
+        "deterministic_test_summary": "",
         "latest_failure_summary": "",
-        "test_summary": "",
         "tests_ok": False,
+        "playtest_ok": False,
+        "playtest_summary": "",
+        "play_actions_attempted": [],
         "product_review_ok": False,
         "product_review_summary": "",
         "requirements_attempts": 0,
         "implementation_attempts": 0,
+        "playtest_attempts": 0,
         "review_attempts": 0,
         "max_requirements_attempts": int(os.getenv("MAX_REQUIREMENTS_ATTEMPTS", "2")),
         "max_implementation_attempts": int(os.getenv("MAX_IMPLEMENTATION_ATTEMPTS", "4")),
+        "max_playtest_attempts": int(os.getenv("MAX_PLAYTEST_ATTEMPTS", "3")),
         "max_review_attempts": int(os.getenv("MAX_REVIEW_ATTEMPTS", "2")),
         "final_status": "pending",
     }

@@ -25,6 +25,7 @@ def implementor_node(
         state["user_request"],
         state["requirements_summary"],
         state["latest_failure_summary"],
+        state.get("change_scope", ""),
     )
     raw = invoke_text(llm, prompt)
 

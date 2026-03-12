@@ -18,7 +18,7 @@ SCHEMAS: dict[str, dict[str, Any]] = {
             "route": str,
             "summary": str,
         },
-        "enum": {"route": {"end", "implementor", "requirements_author"}},
+        "enum": {"route": {"end", "implementor", "change_planner"}},
     },
 }
 
