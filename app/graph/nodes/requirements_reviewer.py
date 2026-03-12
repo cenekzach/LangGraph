@@ -8,6 +8,7 @@ from app.graph.nodes.common import invoke_json
 from app.graph.state import WorkflowState
 from app.mcp.filesystem_client import FilesystemMCPClient
 from app.prompts.builders import requirements_review_prompt
+from app.structured_output.validator import StructuredOutputError
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +20,25 @@ def requirements_reviewer_node(
 ) -> WorkflowState:
     logger.info("requirements_reviewer:start")
     requirements_md = fs_client.read_file(state["requirements_path"])
-    review = invoke_json(llm, requirements_review_prompt(requirements_md))
+
+    try:
+        review = invoke_json(
+            llm,
+            requirements_review_prompt(requirements_md),
+            schema_name="requirements_review",
+            node_name="requirements_reviewer",
+            allow_fallback_repair=True,
+        )
+    except StructuredOutputError as exc:
+        feedback = str(exc)
+        logger.warning("compact_feedback:requirements_reviewer %s", feedback)
+        return {
+            **state,
+            "requirements_ok": False,
+            "requirements_feedback": feedback,
+            "latest_failure_summary": feedback,
+        }
+
     ok = bool(review.get("requirements_ok", False))
     issues = review.get("issues", [])
     feedback = review.get("rewrite_instructions", "")

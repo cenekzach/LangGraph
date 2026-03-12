@@ -2,6 +2,8 @@ from types import SimpleNamespace
 
 from app.graph.nodes.common import invoke_json
 from app.graph.nodes.implementor import implementor_node
+from app.structured_output.parsers import parse_artifact_blocks
+from app.structured_output.validator import StructuredOutputError
 
 
 class DummyLLM:
@@ -12,49 +14,49 @@ class DummyLLM:
         return SimpleNamespace(content=self._content)
 
 
-def test_invoke_json_parses_markdown_wrapped_json_with_trailing_commas():
+def test_invoke_json_repairs_markdown_wrapped_json_with_trailing_commas():
     llm = DummyLLM(
         """
-Here is the plan:
+Here is the review:
 ```json
 {
-  "source_files": [
-    {"path": "app/main.py", "content": "print('ok')",},
-  ],
-  "implementation_summary": "updated",
+  "requirements_ok": true,
+  "issues": [],
+  "rewrite_instructions": "",
+  "summary": "ok",
 }
 ```
 """
     )
 
-    parsed = invoke_json(llm, "ignored")
+    parsed = invoke_json(llm, "ignored", schema_name="requirements_review", node_name="requirements_reviewer")
 
-    assert parsed["implementation_summary"] == "updated"
-    assert parsed["source_files"][0]["path"] == "app/main.py"
+    assert parsed["summary"] == "ok"
 
 
-def test_invoke_json_parses_balanced_json_object_in_freeform_text():
-    llm = DummyLLM(
-        "Result follows => {\n"
-        "  \"requirements_ok\": true,\n"
-        "  \"issues\": []\n"
-        "} <= end"
+def test_invoke_json_schema_validation_returns_compact_error():
+    llm = DummyLLM('{"requirements_ok": true}')
+
+    try:
+        invoke_json(llm, "ignored", schema_name="requirements_review", node_name="requirements_reviewer")
+    except StructuredOutputError as exc:
+        assert "Missing required field" in str(exc)
+    else:
+        raise AssertionError("Expected StructuredOutputError")
+
+
+def test_parse_artifact_blocks_reads_plain_text_file_sections():
+    raw = (
+        "IMPLEMENTATION_SUMMARY: updated\n"
+        "FILE_PATH: app/main.py\n"
+        "```python\n"
+        "print('ok')\n"
+        "```\n"
     )
 
-    parsed = invoke_json(llm, "ignored")
+    parsed = parse_artifact_blocks(raw)
 
-    assert parsed == {"requirements_ok": True, "issues": []}
-
-
-class SequencedDummyLLM:
-    def __init__(self, responses: list[str]):
-        self._responses = responses
-        self.calls = 0
-
-    def invoke(self, _prompt: str):
-        idx = min(self.calls, len(self._responses) - 1)
-        self.calls += 1
-        return SimpleNamespace(content=self._responses[idx])
+    assert parsed == [{"path": "app/main.py", "content": "print('ok')"}]
 
 
 class DummyFSClient:
@@ -91,28 +93,28 @@ def _base_state():
     }
 
 
-def test_implementor_retries_with_stricter_prompt_on_invalid_json():
-    llm = SequencedDummyLLM(
-        responses=[
-            "not json",
-            '{"source_files": [{"path": "app/main.py", "content": "print(1)"}], "implementation_summary": "ok"}',
-        ]
+def test_implementor_writes_plain_text_artifact_blocks_without_json_loop():
+    llm = DummyLLM(
+        "IMPLEMENTATION_SUMMARY: ok\n"
+        "FILE_PATH: app/main.py\n"
+        "```python\n"
+        "print(1)\n"
+        "```"
     )
     fs = DummyFSClient()
 
     out = implementor_node(_base_state(), llm, fs)
 
-    assert llm.calls == 2
+    assert out["implementation_attempts"] == 1
     assert out["implementation_summary"] == "ok"
     assert out["source_paths"] == ["app/main.py"]
 
 
-def test_implementor_falls_back_to_empty_plan_after_two_invalid_payloads():
-    llm = SequencedDummyLLM(responses=["not json", "still not json"])
+def test_implementor_returns_compact_feedback_on_invalid_artifact_blocks():
+    llm = DummyLLM("not parseable")
     fs = DummyFSClient()
 
     out = implementor_node(_base_state(), llm, fs)
 
-    assert llm.calls == 2
-    assert out["implementation_summary"].startswith("implementation plan unavailable")
+    assert "Invalid implementor artifact format" in out["latest_failure_summary"]
     assert out["source_paths"] == []

@@ -1,6 +1,6 @@
 # LangGraph Requirements-First MCP Workflow
 
-This project now runs a compact **requirements-first multi-node LangGraph workflow** designed for local models with smaller context windows.
+This project runs a compact **requirements-first multi-node LangGraph workflow** designed for local models with smaller context windows.
 
 ## Graph structure
 
@@ -35,6 +35,56 @@ Requirements are written to `/workspace/artifacts/requirements.current.md` as hu
 - later nodes can consume a short summary instead of full chat history,
 - acceptance criteria and edge cases stay explicit and testable.
 
+## Structured output strategy (small-model friendly)
+
+The workflow now minimizes fragile raw JSON generation:
+- **requirements stay Markdown**,
+- **source/test files are emitted as plain text artifact blocks**, not giant JSON-escaped strings,
+- JSON is kept for **small schema-bound summaries/review decisions** only.
+
+### Artifact block format (implementor/tester)
+
+`implementor` and `tester` produce deterministic plain text sections:
+
+```text
+IMPLEMENTATION_SUMMARY: short summary
+FILE_PATH: app/main.py
+<python fenced file content>
+```
+
+and for tests:
+
+```text
+TEST_SUMMARY: short summary
+FILE_PATH: tests/test_main.py
+<python fenced file content>
+```
+
+The app parses `FILE_PATH + fenced content` blocks deterministically and writes files directly via filesystem MCP.
+
+## Structured validation + repair
+
+For nodes that still require JSON (`requirements_reviewer`, `product_reviewer`):
+
+1. **Validate immediately** against compact schemas.
+2. If invalid, attempt **deterministic repair first** (strip fences, trim leading/trailing junk, normalize smart quotes, remove trailing commas, extract first JSON object).
+3. Re-validate.
+4. Only if still invalid, attempt a **narrow fallback JSON repair** prompt that fixes syntax only (no new fields/prose).
+
+This behavior is implemented in:
+- `app/structured_output/schemas.py`
+- `app/structured_output/validator.py`
+- `app/structured_output/json_repair.py`
+- `app/structured_output/parsers.py`
+
+## Compact error feedback
+
+When structured output is invalid, nodes send compact targeted feedback instead of echoing huge malformed payloads, for example:
+- `Invalid JSON for requirements_review: Missing required field: summary`
+- `Invalid implementor artifact format: expected FILE_PATH + fenced content blocks`
+
+This keeps retries focused and context-efficient.
+
 ## MCP integrations
 
 ### Filesystem MCP (`app/mcp/filesystem_client.py`)
@@ -63,31 +113,16 @@ Default caps:
 
 If a cap is exceeded, workflow ends `failed` and writes loop summary artifacts.
 
-## Context-window strategy
+## Logging
 
-To stay practical for ~16k local model contexts, each node prompt is intentionally small:
-- only uses minimal state fields needed for that node,
-- reads targeted artifact files (not full repo dumps),
-- truncates long feedback/log strings,
-- stores bulky details in file artifacts instead of graph state.
+Logs now explicitly show structured-output behavior:
+- `structured_output:validate ...`
+- `structured_output:repair deterministic attempt/success`
+- `structured_output:repair fallback attempt/failed`
+- compact feedback logs for invalid responses
+- normal router decisions and node progress
 
-Prompt builders are in `app/prompts/builders.py`.
-
-## Logs (`docker logs` friendly)
-
-Structured logs are emitted for:
-- node start/end,
-- routing decisions,
-- MCP reads/writes,
-- syntax/test outcomes,
-- retry cap exits,
-- final workflow result.
-
-Examples:
-- `requirements_author:start`
-- `tester:syntax ok`
-- `router:tester -> implementor`
-- `workflow:end status=success`
+Large malformed JSON blobs are not logged.
 
 ## Run
 
@@ -96,13 +131,3 @@ source scripts/setup_venv.sh
 cp env.example .env
 python3 poc_single_node.py "Build a simple calculator app"
 ```
-
-## Example flow for “Build a simple calculator app”
-
-1. `requirements_author` writes concise calculator requirements markdown.
-2. `requirements_reviewer` checks coherence and testability.
-3. `implementor` writes calculator source files through filesystem MCP.
-4. `tester` writes tests and executes syntax + pytest through Python executor MCP.
-5. Failing tests route back to `implementor` with compact failure summary.
-6. Passing tests route to `product_reviewer` for requirements-intent alignment.
-7. Workflow ends success only when tests pass and product review approves.
