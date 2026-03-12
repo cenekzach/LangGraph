@@ -30,7 +30,7 @@ def test_runner_node(
     failing_files = [c.get("path") for c in syntax_checks if not c.get("valid")]
     logger.info("test_runner:syntax_ok=%s checked=%s", syntax_ok, len(syntax_checks))
 
-    pytest_result = pyexec_client.python_run_tests("python -m pytest -q")
+    pytest_result = pyexec_client.python_run_tests("python -m pytest -q -p no:cacheprovider tests")
     pytest_ok = bool(pytest_result.get("ok")) and pytest_result.get("exit_code") == 0
     pytest_exit = pytest_result.get("exit_code")
     logger.info("test_runner:pytest exit_code=%s tests_ok=%s", pytest_exit, pytest_ok)
@@ -91,14 +91,14 @@ def _run_cli_contract_scenario(state: WorkflowState, pyexec_client: PythonExecut
 
     checks: list[dict[str, object]] = []
 
-    first = pyexec_client.python_run_script(f"python {target} --exit", as_command=True)
+    first = pyexec_client.python_run_script(path=target, args=["--exit"])
     check_exit = bool(first.get("ok")) and first.get("exit_code") == 0
     checks.append({"name": "exit_flag", "ok": check_exit})
     if not check_exit:
         return {"scenario_ok": False, "failure_summary": "--exit contract check failed", "checks": checks}
 
-    replay = pyexec_client.python_run_script(f"python {target} --actions 1,1 --exit", as_command=True)
-    replay2 = pyexec_client.python_run_script(f"python {target} --actions 1,1 --exit", as_command=True)
+    replay = pyexec_client.python_run_script(path=target, args=["--actions", "1,1", "--exit"])
+    replay2 = pyexec_client.python_run_script(path=target, args=["--actions", "1,1", "--exit"])
     deterministic_ok = (
         bool(replay.get("ok"))
         and bool(replay2.get("ok"))

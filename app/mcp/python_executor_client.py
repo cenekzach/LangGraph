@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -112,18 +113,32 @@ class PythonExecutorMCPClient(FilesystemMCPClient):
                 "duration_ms": int((time.perf_counter() - started) * 1000),
             }
 
-    def python_run_tests(self, command: str = "python -m pytest -q") -> dict[str, Any]:
+    def python_run_tests(self, command: str = "python -m pytest -q -p no:cacheprovider tests") -> dict[str, Any]:
         logger.info("python_executor:run_tests_start command=%s", command)
         return self._run_command_tool(self._exec_binding.run_tests_tool, {"command": command})
 
-    def python_run_script(self, code_or_command: str, *, as_command: bool = False) -> dict[str, Any]:
-        logger.info("python_executor:run_script_start as_command=%s", as_command)
-        args = {"command": code_or_command} if as_command else {"code": code_or_command}
-        return self._run_command_tool(self._exec_binding.run_script_tool, args)
+    def python_run_script(
+        self,
+        path: str,
+        args: list[str] | None = None,
+        *,
+        stdin_text: str = "",
+        timeout_seconds: int = 30,
+        cwd: str = ".",
+    ) -> dict[str, Any]:
+        logger.info("python_executor:run_script_start path=%s args=%s", path, args or [])
+        payload = {
+            "path": path,
+            "args": args or [],
+            "stdin_text": stdin_text,
+            "timeout_seconds": timeout_seconds,
+            "cwd": cwd,
+        }
+        return self._run_command_tool(self._exec_binding.run_script_tool, payload)
 
     # Backward compatibility
     def execute_python(self, code: str) -> dict[str, Any]:
-        return self.python_run_script(code)
+        return self.python_run_script(path="-c", args=[code])
 
     def syntax_check(self, paths: list[str]) -> dict[str, Any]:
         checks = [self.python_syntax_check(path) for path in paths]
@@ -139,14 +154,14 @@ class PythonExecutorMCPClient(FilesystemMCPClient):
             ).strip(),
         }
 
-    def run_tests(self, command: str = "python -m pytest -q") -> dict[str, Any]:
+    def run_tests(self, command: str = "python -m pytest -q -p no:cacheprovider tests") -> dict[str, Any]:
         return self.python_run_tests(command)
 
     def _run_command_tool(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         started = time.perf_counter()
         try:
             normalized = self._call_tool(tool_name, arguments)
-            content = normalized.get("content", {})
+            content = self._extract_command_content(normalized)
             exit_code = self._as_int(content.get("exit_code", normalized.get("exit_code")))
             timed_out = bool(content.get("timed_out", False))
             return {
@@ -208,3 +223,37 @@ class PythonExecutorMCPClient(FilesystemMCPClient):
             }
         text = FilesystemMCPClient._extract_content(result)
         return {"stdout": text, "stderr": "", "exit_code": 0, "content": {"stdout": text, "stderr": "", "exit_code": 0}}
+
+    @staticmethod
+    def _extract_command_content(normalized: dict[str, Any]) -> dict[str, Any]:
+        content = normalized.get("content", {})
+        if not isinstance(content, dict):
+            content = {}
+
+        parsed = PythonExecutorMCPClient._extract_embedded_payload(normalized.get("stdout", ""))
+        if parsed is not None:
+            merged = dict(content)
+            merged.update(parsed)
+            return merged
+        return content
+
+    @staticmethod
+    def _extract_embedded_payload(text: str) -> dict[str, Any] | None:
+        stripped = (text or "").strip()
+        if not stripped:
+            return None
+
+        candidates = [stripped]
+        for line in reversed(stripped.splitlines()):
+            line = line.strip()
+            if line.startswith("{") and line.endswith("}"):
+                candidates.append(line)
+
+        for candidate in candidates:
+            try:
+                decoded = json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(decoded, dict) and "exit_code" in decoded:
+                return decoded
+        return None

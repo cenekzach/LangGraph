@@ -12,17 +12,21 @@ FINAL_STATUS_PATH = "/workspace/artifacts/final_status.json"
 
 
 def terminal_node(state: WorkflowState, fs_client: FilesystemMCPClient) -> WorkflowState:
+    final_status = state.get("final_status", "failed_internal_error")
+    if final_status == "pending":
+        final_status = "failed_internal_error"
+    terminal_state = {**state, "final_status": final_status}
     payload = {
-        "final_status": state.get("final_status", "failed_internal_error"),
+        "final_status": final_status,
         "failure_category": state.get("failure_category", ""),
         "last_route_reason": state.get("last_route_reason", ""),
         "latest_failure_summary": state.get("latest_failure_summary", ""),
         "attempt_counts": state.get("attempt_counts", {}),
-        "suggested_next_intervention": _suggest(state),
+        "suggested_next_intervention": _suggest(terminal_state),
     }
     fs_client.write_file(FINAL_STATUS_PATH, safe_json_dumps(payload))
     logger.info("workflow:end %s", payload["final_status"])
-    return state
+    return terminal_state
 
 
 def _suggest(state: WorkflowState) -> str:

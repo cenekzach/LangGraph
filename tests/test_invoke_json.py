@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 from app.graph.nodes.common import invoke_json
 from app.graph.nodes.implementor import implementor_node
-from app.structured_output.parsers import parse_artifact_blocks
+from app.structured_output.parsers import canonicalize_test_path, parse_artifact_blocks
 from app.structured_output.validator import StructuredOutputError
 
 
@@ -57,6 +57,14 @@ def test_parse_artifact_blocks_reads_plain_text_file_sections():
     parsed = parse_artifact_blocks(raw)
 
     assert parsed == [{"path": "app/main.py", "content": "print('ok')"}]
+
+
+def test_canonicalize_test_path_normalizes_workspace_root_test_file():
+    assert canonicalize_test_path("/workspace/test_game.py") == "tests/test_game.py"
+
+
+def test_canonicalize_test_path_keeps_existing_tests_path():
+    assert canonicalize_test_path("tests/test_game.py") == "tests/test_game.py"
 
 
 class DummyFSClient:
