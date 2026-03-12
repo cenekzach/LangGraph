@@ -2,15 +2,18 @@ from app.workflow import (
     route_playtester,
     route_product_review,
     route_requirements,
+    route_static_contract,
     route_test_runner,
 )
 
 
 def base_state():
     return {
+        "task_id": "t1",
         "requirements_ok": False,
         "requirements_attempts": 0,
         "max_requirements_attempts": 2,
+        "contract_check_ok": False,
         "tests_ok": False,
         "implementation_attempts": 0,
         "max_implementation_attempts": 4,
@@ -22,13 +25,21 @@ def base_state():
         "max_review_attempts": 2,
         "product_review_summary": "",
         "final_status": "pending",
+        "failure_category": "",
+        "last_route_reason": "",
     }
 
 
-def test_requirements_route_to_implementor_on_pass():
+def test_requirements_route_to_contract_builder_on_pass():
     s = base_state()
     s["requirements_ok"] = True
-    assert route_requirements(s) == "implementor"
+    assert route_requirements(s) == "interface_contract_builder"
+
+
+def test_contract_route_to_test_runner_on_pass():
+    s = base_state()
+    s["contract_check_ok"] = True
+    assert route_static_contract(s) == "test_runner"
 
 
 def test_test_runner_route_to_playtester_on_pass():

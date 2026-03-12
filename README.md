@@ -1,6 +1,15 @@
 # LangGraph iterative CLI app workflow
 
-This project runs a compact multi-node LangGraph workflow designed for smaller local models while still supporting iterative updates to existing projects.
+This project runs a compact multi-node LangGraph workflow designed for smaller local models while making evaluation more **procedural**, deterministic, and debuggable.
+
+## Why this workflow was refactored
+
+The pipeline now explicitly separates:
+
+- **MCP transport success** (`ok=True` means tool call reached MCP and returned) and
+- **inner command success** (e.g. `exit_code == 0`, `valid == True`).
+
+Routing and pass/fail decisions use inner execution fields, not loose string interpretation.
 
 ## Graph structure
 
@@ -10,76 +19,84 @@ START
  -> requirements_reviewer
 
 requirements_reviewer
- -> change_planner (requirements need revision)
- -> implementor (requirements acceptable)
+ -> change_planner               (requirements need revision)
+ -> interface_contract_builder   (requirements acceptable)
+
+interface_contract_builder
+ -> implementor
 
 implementor
  -> test_author
 
 test_author
- -> test_runner
+ -> static_contract_checker
+
+static_contract_checker
+ -> implementor                  (structural mismatch)
+ -> test_runner                  (structural checks pass)
 
 test_runner
- -> implementor (syntax/pytest/static checks fail)
- -> playtester (deterministic checks pass)
+ -> implementor                  (syntax/pytest/scenario fail)
+ -> playtester                   (deterministic checks pass)
 
 playtester
- -> implementor (bugs/dead ends/flag UX issues)
- -> product_reviewer (playtest confidence acceptable)
+ -> implementor                  (bugs, dead-end loops, parse failures)
+ -> product_reviewer             (sufficient confidence)
 
 product_reviewer
- -> implementor (implementation wrong)
- -> change_planner (requirements wrong)
- -> END (acceptable)
+ -> implementor                  (implementation issue)
+ -> change_planner               (requirements issue)
+ -> END                          (success)
+
+Any phase exceeding retry caps routes to terminal -> END with explicit failure status.
 ```
 
 ## Node responsibilities
 
-- **change_planner**: updates `/workspace/artifacts/requirements.current.md` in Markdown, merges latest user change with existing requirements, and writes compact `/workspace/artifacts/change_scope.json`.
-- **requirements_reviewer**: checks coherence, contradictions, ambiguity, acceptance criteria, and deterministic CLI contract (`--actions`, `--exit`, numeric actions).
-- **implementor**: makes targeted source edits and writes `/workspace/artifacts/implementation.summary.json`.
-- **test_author**: writes deterministic pytest/static scenario tests and updates `/workspace/artifacts/test.summary.json` metadata.
-- **test_runner**: procedurally computes pass/fail from syntax + pytest exit codes and writes structured deterministic results.
-- **playtester**: exploratory black-box runner for game-like apps using repeated `python <script> --actions ... --exit` calls, bounded by step limit, with compact bug reports in `/workspace/artifacts/playtest.summary.json` and optional `/workspace/artifacts/playtest.log.md`.
-- **product_reviewer**: final semantic check after deterministic and creative testing.
+- **interface_contract_builder** writes `/workspace/artifacts/interface_contract.json` with machine-readable CLI/entrypoint contract.
+- **static_contract_checker** catches cheap mismatches before pytest (missing files, unresolved test imports/symbols, parse failures) and writes `/workspace/artifacts/contract_check.summary.json`.
+- **test_runner** is procedural Python logic: syntax checks, pytest, deterministic CLI scenario checks; writes `/workspace/artifacts/test.summary.json` and `/workspace/artifacts/test.details.json`.
+- **playtester** uses bounded exploration (frontier search), only valid parsed actions, state hashing/dedupe, and early stop on stagnation; writes `/workspace/artifacts/playtest.summary.json` + `/workspace/artifacts/playtest.log.md`.
+- **terminal** writes `/workspace/artifacts/final_status.json` with terminal classification and suggested intervention.
 
-## Deterministic vs creative testing
+## Structured MCP result shapes
 
-### Deterministic static testing
-- strict and reproducible
-- syntax checks on relevant files
-- pytest execution for fixed scenario checks
-- pass/fail based on tool exit codes/output contracts (never model override)
+`PythonExecutorMCPClient` now returns stable objects:
 
-### Creative exploratory play-testing
-- black-box interaction loop
-- reruns game each step with accumulated `--actions ... --exit`
-- parses shown numeric actions, picks next action, tracks visited states
-- stops on win, stuck loop, inconsistency, execution error, or step limit
+- `python_syntax_check(path)` -> `{ok, valid, path, error_type, error_message, line, offset, duration_ms}`
+- `python_run_tests(command)` -> `{ok, exit_code, stdout, stderr, timed_out, duration_ms}`
+- `python_run_script(...)` -> `{ok, exit_code, stdout, stderr, timed_out, duration_ms}`
 
-## Artifacts (compact state strategy)
+This avoids false positives where transport success was mistaken for test pass.
 
-The graph state remains compact and stores only summaries/paths. Larger content is file-backed:
+## Explicit terminal statuses
 
-- `/workspace/artifacts/requirements.current.md`
-- `/workspace/artifacts/change_scope.json`
-- `/workspace/artifacts/implementation.summary.json`
+Final status is always one of:
+
+- `success`
+- `failed_requirements`
+- `failed_implementation`
+- `failed_tests`
+- `failed_playtest`
+- `failed_review`
+- `failed_internal_error`
+
+No vague `pending` terminal outcomes after retries are exhausted.
+
+## Artifacts and debugging/checkpoint trail
+
+Workflow keeps in-memory state compact and writes detailed artifacts:
+
+- `/workspace/artifacts/interface_contract.json`
+- `/workspace/artifacts/contract_check.summary.json`
 - `/workspace/artifacts/test.summary.json`
+- `/workspace/artifacts/test.details.json`
 - `/workspace/artifacts/playtest.summary.json`
-- `/workspace/artifacts/review.summary.json`
-- optional `/workspace/artifacts/playtest.log.md`
+- `/workspace/artifacts/playtest.log.md`
+- `/workspace/artifacts/route_decisions.jsonl`
+- `/workspace/artifacts/final_status.json`
 
-This keeps prompts small for limited context windows.
-
-## Logging
-
-Workflow logs are optimized for `docker logs` readability:
-
-- node start/end
-- routing decisions
-- deterministic test outcomes (including pytest exit code)
-- concise playtester step logs (`step`, selected action sequence, stuck/win status)
-- final status
+`route_decisions.jsonl` records route + reason per transition for postmortem debugging.
 
 ## Run
 
@@ -87,4 +104,4 @@ Workflow logs are optimized for `docker logs` readability:
 python -m app.workflow "Build or update my CLI app..."
 ```
 
-Then inspect artifacts under `/workspace/artifacts/` and logs for routing/test/playtest behavior.
+Then inspect `/workspace/artifacts/` and logs (`test_runner:pytest exit_code=...`, `router:* reason=...`, `workflow:end ...`).
