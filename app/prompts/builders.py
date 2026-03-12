@@ -78,14 +78,31 @@ def parse_change_scope(raw: str) -> tuple[str, dict]:
 def requirements_review_prompt(requirements_md: str) -> str:
     return textwrap.dedent(
         f"""
-        Review the requirements markdown for clarity, consistency, and testability.
+        Review the requirements markdown for implementation readiness.
         Return strict JSON with keys:
-        requirements_ok (boolean), issues (array of short strings), rewrite_instructions (string), summary (string).
+        requirements_ok (boolean),
+        blocking_issues (array of short strings),
+        non_blocking_issues (array of short strings),
+        assumptions_to_record (array of short strings),
+        review_summary (string).
+
+        Policy:
+        - Approve when requirements are sufficient to build a reasonable implementation.
+        - Do NOT require full formal specification.
+        - Treat minor unspecified details as non-blocking assumptions unless they change core behavior.
+        - Only mark blocking if implementation cannot proceed coherently (contradiction, impossible requirement, missing core behavior, no clear success target).
+
+        Good-enough threshold for approval:
+        - app purpose is clear
+        - main interaction loop is clear
+        - success condition is clear
+        - testing target is clear enough
+        - no contradictions remain
 
         Verify CLI contract is explicit where relevant: numeric action format, --actions, --exit behavior, deterministic replay.
 
         Requirements markdown:
-        {shrink(requirements_md, 2500)}
+        {requirements_md}
         """
     ).strip()
 

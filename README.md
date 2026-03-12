@@ -2,14 +2,25 @@
 
 This project runs a compact multi-node LangGraph workflow designed for smaller local models while making evaluation more **procedural**, deterministic, and debuggable.
 
-## Why this workflow was refactored
+## Why the requirements stage was refactored
 
-The pipeline now explicitly separates:
+Recent runs showed a practical failure mode: requirements files were complete, but the reviewer still rejected them based on text fragments that looked truncated. The workflow now treats the requirements markdown artifact as the source of truth and adds procedural integrity checks before asking the model reviewer.
 
-- **MCP transport success** (`ok=True` means tool call reached MCP and returned) and
-- **inner command success** (e.g. `exit_code == 0`, `valid == True`).
+### What changed
 
-Routing and pass/fail decisions use inner execution fields, not loose string interpretation.
+- Requirements review now loads **`/workspace/artifacts/requirements.current.md`** directly (full file review, not summary-only review).
+- The reviewer logs what it actually read:
+  - path
+  - character count
+  - first 120 chars
+  - last 120 chars
+  - source type (`full_file`)
+- A deterministic integrity preflight runs before model review and writes:
+  - **`/workspace/artifacts/requirements_integrity.json`**
+- Review output is now severity-based (`blocking_issues`, `non_blocking_issues`, `assumptions_to_record`) instead of strict binary pass/fail.
+- Non-blocking gaps are recorded in:
+  - **`/workspace/artifacts/requirements.assumptions.md`**
+- Routing now uses a **good-enough-to-build threshold** to avoid endless rewrites.
 
 ## Graph structure
 
@@ -19,8 +30,13 @@ START
  -> requirements_reviewer
 
 requirements_reviewer
- -> change_planner               (requirements need revision)
- -> interface_contract_builder   (requirements acceptable)
+ -> terminal                    (internal input/integrity failure)
+ -> change_planner              (blocking requirements issues)
+ -> assumption_recorder         (non-blocking issues / assumptions)
+ -> interface_contract_builder  (requirements good enough)
+
+assumption_recorder
+ -> interface_contract_builder
 
 interface_contract_builder
  -> implementor
@@ -51,44 +67,43 @@ product_reviewer
 Any phase exceeding retry caps routes to terminal -> END with explicit failure status.
 ```
 
+## Requirements review policy
+
+The reviewer is now implementation-biased:
+
+- Approve requirements if they are sufficient to build a reasonable implementation.
+- Do not require a full formal specification.
+- Treat minor unspecified details as assumptions unless they alter core behavior.
+- Only block when implementation cannot proceed coherently (contradiction, impossible requirement, missing core behavior, missing success target).
+
+## Smart loop control
+
+Requirements loops are limited more intelligently:
+
+- First failures return blocking issues for rewrite.
+- Repeated cycles can de-escalate non-blocking concerns into assumptions.
+- If only non-blocking issues remain, assumptions are recorded and implementation proceeds.
+
+This prevents "perfect spec" rewrite loops when the app is already implementable.
+
 ## Node responsibilities
 
+- **requirements_reviewer** validates input integrity, reviews full requirements artifact, classifies severity, and writes `/workspace/artifacts/requirements_integrity.json` + `/workspace/artifacts/review.summary.json`.
+- **assumption_recorder** writes `/workspace/artifacts/requirements.assumptions.md` from reviewer assumptions.
 - **interface_contract_builder** writes `/workspace/artifacts/interface_contract.json` with machine-readable CLI/entrypoint contract.
-- **static_contract_checker** catches cheap mismatches before pytest (missing files, unresolved test imports/symbols, parse failures) and writes `/workspace/artifacts/contract_check.summary.json`.
+- **static_contract_checker** catches cheap mismatches before pytest and writes `/workspace/artifacts/contract_check.summary.json`.
 - **test_runner** is procedural Python logic: syntax checks, pytest, deterministic CLI scenario checks; writes `/workspace/artifacts/test.summary.json` and `/workspace/artifacts/test.details.json`.
-- **playtester** uses bounded exploration (frontier search), only valid parsed actions, state hashing/dedupe, and early stop on stagnation; writes `/workspace/artifacts/playtest.summary.json` + `/workspace/artifacts/playtest.log.md`.
+- **playtester** uses bounded exploration and writes `/workspace/artifacts/playtest.summary.json` + `/workspace/artifacts/playtest.log.md`.
 - **terminal** writes `/workspace/artifacts/final_status.json` with terminal classification and suggested intervention.
-
-## Structured MCP result shapes
-
-`PythonExecutorMCPClient` now returns stable objects:
-
-- `python_syntax_check(path)` -> `{ok, valid, path, error_type, error_message, line, offset, duration_ms}`
-- `python_run_tests(command)` -> `{ok, exit_code, stdout, stderr, timed_out, duration_ms}` (pytest output is parsed so inner exit code is honored when wrapped in text)
-- `python_run_script(path, args, stdin_text, timeout_seconds, cwd)` -> `{ok, exit_code, stdout, stderr, timed_out, duration_ms}`
-
-Deterministic tests are written under `tests/` only, and pytest is invoked with `-p no:cacheprovider` to avoid cache writes in read-only workspaces.
-
-This avoids false positives where transport success was mistaken for test pass.
-
-## Explicit terminal statuses
-
-Final status is always one of:
-
-- `success`
-- `failed_requirements`
-- `failed_implementation`
-- `failed_tests`
-- `failed_playtest`
-- `failed_review`
-- `failed_internal_error`
-
-No vague `pending` terminal outcomes after retries are exhausted.
 
 ## Artifacts and debugging/checkpoint trail
 
 Workflow keeps in-memory state compact and writes detailed artifacts:
 
+- `/workspace/artifacts/requirements.current.md`
+- `/workspace/artifacts/requirements_integrity.json`
+- `/workspace/artifacts/requirements.assumptions.md`
+- `/workspace/artifacts/review.summary.json`
 - `/workspace/artifacts/interface_contract.json`
 - `/workspace/artifacts/contract_check.summary.json`
 - `/workspace/artifacts/test.summary.json`
@@ -98,7 +113,13 @@ Workflow keeps in-memory state compact and writes detailed artifacts:
 - `/workspace/artifacts/route_decisions.jsonl`
 - `/workspace/artifacts/final_status.json`
 
-`route_decisions.jsonl` records route + reason per transition for postmortem debugging.
+`route_decisions.jsonl` records route + reason per transition. Requirements-stage logs should clearly show:
+
+- `requirements_reviewer:loaded ... source=full_file`
+- `requirements_reviewer:integrity ok=...`
+- `requirements_reviewer:blocking=X non_blocking=Y assumptions=Z`
+- `assumption_recorder:wrote N assumptions`
+- `router:requirements_reviewer -> ... reason=...`
 
 ## Run
 
@@ -106,4 +127,4 @@ Workflow keeps in-memory state compact and writes detailed artifacts:
 python -m app.workflow "Build or update my CLI app..."
 ```
 
-Then inspect `/workspace/artifacts/` and logs (`test_runner:pytest exit_code=...`, `router:* reason=...`, `workflow:end ...`).
+Then inspect `/workspace/artifacts/` and logs for requirements source/integrity/routing decisions.

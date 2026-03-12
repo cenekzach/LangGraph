@@ -21,9 +21,10 @@ Here is the review:
 ```json
 {
   "requirements_ok": true,
-  "issues": [],
-  "rewrite_instructions": "",
-  "summary": "ok",
+  "blocking_issues": [],
+  "non_blocking_issues": [],
+  "assumptions_to_record": [],
+  "review_summary": "ok",
 }
 ```
 """
@@ -31,7 +32,7 @@ Here is the review:
 
     parsed = invoke_json(llm, "ignored", schema_name="requirements_review", node_name="requirements_reviewer")
 
-    assert parsed["summary"] == "ok"
+    assert parsed["review_summary"] == "ok"
 
 
 def test_invoke_json_schema_validation_returns_compact_error():
@@ -80,7 +81,14 @@ def _base_state():
         "task_id": "t-1",
         "user_request": "Build a hello world app",
         "requirements_path": "/workspace/artifacts/requirements.current.md",
+        "requirements_char_count": 120,
+        "requirements_integrity_ok": True,
+        "requirements_review_source": "full_file",
         "requirements_summary": "Create app",
+        "blocking_issues": [],
+        "non_blocking_issues": [],
+        "assumptions_to_record": [],
+        "requirements_review_summary": "ok",
         "requirements_ok": True,
         "requirements_feedback": "",
         "source_paths": [],

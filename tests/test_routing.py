@@ -13,6 +13,9 @@ def base_state():
         "requirements_ok": False,
         "requirements_attempts": 0,
         "max_requirements_attempts": 2,
+        "blocking_issues": [],
+        "non_blocking_issues": [],
+        "assumptions_to_record": [],
         "contract_check_ok": False,
         "tests_ok": False,
         "implementation_attempts": 0,
@@ -34,6 +37,26 @@ def test_requirements_route_to_contract_builder_on_pass():
     s = base_state()
     s["requirements_ok"] = True
     assert route_requirements(s) == "interface_contract_builder"
+
+
+def test_requirements_route_to_assumptions_when_non_blocking():
+    s = base_state()
+    s["requirements_ok"] = True
+    s["non_blocking_issues"] = ["minor formatting"]
+    assert route_requirements(s) == "assumption_recorder"
+
+
+def test_requirements_route_to_change_planner_when_blocking():
+    s = base_state()
+    s["blocking_issues"] = ["missing core behavior"]
+    assert route_requirements(s) == "change_planner"
+
+
+def test_requirements_route_to_terminal_on_internal_error():
+    s = base_state()
+    s["final_status"] = "failed_internal_error"
+    s["last_route_reason"] = "requirements_input_truncated"
+    assert route_requirements(s) == "terminal"
 
 
 def test_contract_route_to_test_runner_on_pass():

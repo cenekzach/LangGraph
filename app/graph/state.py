@@ -8,7 +8,14 @@ class WorkflowState(TypedDict):
     user_request: str
     latest_user_request: str
     requirements_path: str
+    requirements_char_count: int
+    requirements_integrity_ok: bool
+    requirements_review_source: str
     requirements_summary: str
+    blocking_issues: list[str]
+    non_blocking_issues: list[str]
+    assumptions_to_record: list[str]
+    requirements_review_summary: str
     interface_contract_path: str
     interface_contract_summary: str
     change_scope: str

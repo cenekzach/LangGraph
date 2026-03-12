@@ -11,6 +11,7 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 
 from app.graph.nodes import (
+    assumption_recorder_node,
     change_planner_node,
     implementor_node,
     interface_contract_builder_node,
@@ -37,6 +38,7 @@ def build_graph(llm: ChatOpenAI, fs: FilesystemMCPClient, pyexec: PythonExecutor
 
     graph.add_node("change_planner", lambda s: change_planner_node(s, llm, fs))
     graph.add_node("requirements_reviewer", lambda s: requirements_reviewer_node(s, llm, fs))
+    graph.add_node("assumption_recorder", lambda s: assumption_recorder_node(s, fs))
     graph.add_node("interface_contract_builder", lambda s: interface_contract_builder_node(s, fs))
     graph.add_node("implementor", lambda s: implementor_node(s, llm, fs))
     graph.add_node("test_author", lambda s: test_author_node(s, llm, fs))
@@ -53,10 +55,12 @@ def build_graph(llm: ChatOpenAI, fs: FilesystemMCPClient, pyexec: PythonExecutor
         route_requirements,
         {
             "change_planner": "change_planner",
+            "assumption_recorder": "assumption_recorder",
             "interface_contract_builder": "interface_contract_builder",
             "terminal": "terminal",
         },
     )
+    graph.add_edge("assumption_recorder", "interface_contract_builder")
     graph.add_edge("interface_contract_builder", "implementor")
     graph.add_edge("implementor", "test_author")
     graph.add_edge("test_author", "static_contract_checker")
@@ -111,16 +115,33 @@ def _record_route(state: WorkflowState, source: str, destination: str, reason: s
 
 
 def route_requirements(state: WorkflowState) -> str:
-    if state["requirements_ok"]:
-        _record_route(state, "requirements_reviewer", "interface_contract_builder", "requirements_ok")
-        return "interface_contract_builder"
-    if state["requirements_attempts"] >= state["max_requirements_attempts"]:
-        state["final_status"] = "failed_requirements"
-        state["failure_category"] = "requirements"
-        _record_route(state, "requirements_reviewer", "terminal", "max_requirements_attempts")
+    if state.get("final_status") == "failed_internal_error":
+        state["failure_category"] = "internal_error"
+        _record_route(state, "requirements_reviewer", "terminal", state.get("last_route_reason", "requirements_internal_error"))
         return "terminal"
-    _record_route(state, "requirements_reviewer", "change_planner", "requirements_revision_needed")
-    return "change_planner"
+
+    if state.get("requirements_ok"):
+        if state.get("assumptions_to_record") or state.get("non_blocking_issues"):
+            _record_route(state, "requirements_reviewer", "assumption_recorder", "requirements_good_enough_with_assumptions")
+            return "assumption_recorder"
+        _record_route(state, "requirements_reviewer", "interface_contract_builder", "requirements_good_enough")
+        return "interface_contract_builder"
+
+    if state.get("blocking_issues"):
+        if state["requirements_attempts"] >= state["max_requirements_attempts"]:
+            state["final_status"] = "failed_requirements"
+            state["failure_category"] = "requirements"
+            _record_route(state, "requirements_reviewer", "terminal", "max_requirements_attempts_blocking")
+            return "terminal"
+        _record_route(state, "requirements_reviewer", "change_planner", "requirements_blocking_issues")
+        return "change_planner"
+
+    if state.get("assumptions_to_record") or state.get("non_blocking_issues"):
+        _record_route(state, "requirements_reviewer", "assumption_recorder", "requirements_non_blocking_only")
+        return "assumption_recorder"
+
+    _record_route(state, "requirements_reviewer", "interface_contract_builder", "requirements_good_enough")
+    return "interface_contract_builder"
 
 
 def route_static_contract(state: WorkflowState) -> str:
@@ -216,7 +237,14 @@ def main() -> None:
         "user_request": args.user_request,
         "latest_user_request": args.user_request,
         "requirements_path": "/workspace/artifacts/requirements.current.md",
+        "requirements_char_count": 0,
+        "requirements_integrity_ok": False,
+        "requirements_review_source": "none",
         "requirements_summary": "",
+        "blocking_issues": [],
+        "non_blocking_issues": [],
+        "assumptions_to_record": [],
+        "requirements_review_summary": "",
         "interface_contract_path": "/workspace/artifacts/interface_contract.json",
         "interface_contract_summary": "",
         "change_scope": "{}",
