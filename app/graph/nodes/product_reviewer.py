@@ -52,6 +52,7 @@ def product_reviewer_node(
             "product_review_ok": False,
             "product_review_summary": f"implementor:{summary}",
             "review_attempts": state["review_attempts"] + 1,
+            "attempt_counts": {**state.get("attempt_counts", {}), "review": state["review_attempts"] + 1},
             "latest_failure_summary": summary,
         }
 

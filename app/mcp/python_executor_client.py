@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -81,40 +82,91 @@ class PythonExecutorMCPClient(FilesystemMCPClient):
         )
         return self._exec_binding
 
-    def execute_python(self, code: str) -> dict[str, Any]:
-        logger.info("python_executor:execute_python_start size=%s", len(code))
-        return self._call_tool(self._exec_binding.run_script_tool, {"code": code})
-
-    def syntax_check(self, paths: list[str]) -> dict[str, Any]:
-        logger.info("python_executor:syntax_check_start file_count=%s", len(paths))
-        checks: list[dict[str, Any]] = []
-        for path in paths:
-            checks.append(self._call_tool(self._exec_binding.syntax_check_tool, {"path": path}))
-
-        failing = [check for check in checks if int(check.get("exit_code", 1)) != 0]
-        if not failing:
+    def python_syntax_check(self, path: str) -> dict[str, Any]:
+        logger.info("python_executor:syntax_check_start path=%s", path)
+        started = time.perf_counter()
+        try:
+            normalized = self._call_tool(self._exec_binding.syntax_check_tool, {"path": path})
+            content = normalized.get("content", {})
+            valid = bool(content.get("valid", normalized.get("exit_code", 1) == 0))
             return {
-                "stdout": "",
-                "stderr": "",
-                "exit_code": 0,
-                "checks": checks,
+                "ok": True,
+                "valid": valid,
+                "path": str(content.get("path") or path),
+                "error_type": content.get("error_type"),
+                "error_message": content.get("error_message"),
+                "line": content.get("line"),
+                "offset": content.get("offset"),
+                "duration_ms": int((time.perf_counter() - started) * 1000),
+            }
+        except Exception as exc:
+            logger.exception("python_executor:syntax_check_transport_error path=%s", path)
+            return {
+                "ok": False,
+                "valid": False,
+                "path": path,
+                "error_type": type(exc).__name__,
+                "error_message": str(exc),
+                "line": None,
+                "offset": None,
+                "duration_ms": int((time.perf_counter() - started) * 1000),
             }
 
-        errors = [
-            check.get("stderr") or check.get("stdout", "")
-            for check in failing
-            if (check.get("stderr") or check.get("stdout", ""))
-        ]
+    def python_run_tests(self, command: str = "python -m pytest -q") -> dict[str, Any]:
+        logger.info("python_executor:run_tests_start command=%s", command)
+        return self._run_command_tool(self._exec_binding.run_tests_tool, {"command": command})
+
+    def python_run_script(self, code_or_command: str, *, as_command: bool = False) -> dict[str, Any]:
+        logger.info("python_executor:run_script_start as_command=%s", as_command)
+        args = {"command": code_or_command} if as_command else {"code": code_or_command}
+        return self._run_command_tool(self._exec_binding.run_script_tool, args)
+
+    # Backward compatibility
+    def execute_python(self, code: str) -> dict[str, Any]:
+        return self.python_run_script(code)
+
+    def syntax_check(self, paths: list[str]) -> dict[str, Any]:
+        checks = [self.python_syntax_check(path) for path in paths]
         return {
-            "stdout": "\n".join(errors),
-            "stderr": "\n".join(errors),
-            "exit_code": 1,
+            "ok": all(item.get("ok", False) for item in checks),
             "checks": checks,
+            "exit_code": 0 if checks and all(item.get("valid", False) for item in checks) else 1,
+            "stdout": "",
+            "stderr": "\n".join(
+                f"{item.get('path')}: {item.get('error_type')}: {item.get('error_message')}"
+                for item in checks
+                if not item.get("valid", False)
+            ).strip(),
         }
 
     def run_tests(self, command: str = "python -m pytest -q") -> dict[str, Any]:
-        logger.info("python_executor:run_tests_start command=%s", command)
-        return self._call_tool(self._exec_binding.run_tests_tool, {"command": command})
+        return self.python_run_tests(command)
+
+    def _run_command_tool(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        started = time.perf_counter()
+        try:
+            normalized = self._call_tool(tool_name, arguments)
+            content = normalized.get("content", {})
+            exit_code = self._as_int(content.get("exit_code", normalized.get("exit_code")))
+            timed_out = bool(content.get("timed_out", False))
+            return {
+                "ok": True,
+                "exit_code": exit_code,
+                "stdout": str(content.get("stdout", normalized.get("stdout", ""))),
+                "stderr": str(content.get("stderr", normalized.get("stderr", ""))),
+                "timed_out": timed_out,
+                "duration_ms": int((time.perf_counter() - started) * 1000),
+            }
+        except Exception as exc:
+            logger.exception("python_executor:command_transport_error tool=%s", tool_name)
+            return {
+                "ok": False,
+                "exit_code": None,
+                "stdout": "",
+                "stderr": str(exc),
+                "timed_out": False,
+                "duration_ms": int((time.perf_counter() - started) * 1000),
+            }
 
     def _call_tool(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         result = self._rpc(
@@ -136,36 +188,23 @@ class PythonExecutorMCPClient(FilesystemMCPClient):
         return normalized
 
     @staticmethod
+    def _as_int(value: Any) -> int | None:
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
     def _normalize_result(result: dict[str, Any]) -> dict[str, Any]:
         if isinstance(result.get("structuredContent"), dict):
             content = result["structuredContent"]
-
-            if "valid" in content and "path" in content:
-                valid = bool(content.get("valid"))
-                error_bits = [
-                    str(content.get("error_type", "")).strip(),
-                    str(content.get("error_message", "")).strip(),
-                ]
-                detail = ": ".join(part for part in error_bits if part)
-                if not detail and not valid:
-                    detail = "syntax check failed"
-
-                stdout = f"{content.get('path', '')}: ok" if valid else ""
-                stderr = detail if not valid else ""
-                return {
-                    "stdout": stdout,
-                    "stderr": stderr,
-                    "exit_code": 0 if valid else 1,
-                    "path": content.get("path", ""),
-                    "valid": valid,
-                    "line": content.get("line"),
-                    "offset": content.get("offset"),
-                }
-
             return {
                 "stdout": str(content.get("stdout", "")),
                 "stderr": str(content.get("stderr", "")),
                 "exit_code": content.get("exit_code", 0),
+                "content": content,
             }
         text = FilesystemMCPClient._extract_content(result)
-        return {"stdout": text, "stderr": "", "exit_code": 0}
+        return {"stdout": text, "stderr": "", "exit_code": 0, "content": {"stdout": text, "stderr": "", "exit_code": 0}}

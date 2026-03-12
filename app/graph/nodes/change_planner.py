@@ -59,6 +59,7 @@ def change_planner_node(
         "requirements_summary": requirements_md[:1000],
         "change_scope": safe_json_dumps(scope_payload),
         "requirements_attempts": state["requirements_attempts"] + 1,
+        "attempt_counts": {**state.get("attempt_counts", {}), "requirements": state["requirements_attempts"] + 1},
         "requirements_ok": False,
         "final_status": "pending",
     }

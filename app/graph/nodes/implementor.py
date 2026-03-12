@@ -26,6 +26,7 @@ def implementor_node(
         state["requirements_summary"],
         state["latest_failure_summary"],
         state.get("change_scope", ""),
+        state.get("interface_contract_summary", ""),
     )
     raw = invoke_text(llm, prompt)
 
@@ -41,6 +42,7 @@ def implementor_node(
         return {
             **state,
             "implementation_attempts": state["implementation_attempts"] + 1,
+        "attempt_counts": {**state.get("attempt_counts", {}), "implementation": state["implementation_attempts"] + 1},
             "latest_failure_summary": msg,
             "implementation_summary": msg,
         }
@@ -63,5 +65,6 @@ def implementor_node(
         "source_paths": written_paths or state["source_paths"],
         "implementation_summary": summary_payload["implementation_summary"],
         "implementation_attempts": state["implementation_attempts"] + 1,
+        "attempt_counts": {**state.get("attempt_counts", {}), "implementation": state["implementation_attempts"] + 1},
         "latest_failure_summary": "",
     }

@@ -30,6 +30,7 @@ def test_author_node(
             state["implementation_summary"],
             state["source_paths"],
             state["latest_failure_summary"],
+            state.get("interface_contract_summary", ""),
         ),
     )
 

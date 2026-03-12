@@ -90,7 +90,7 @@ def requirements_review_prompt(requirements_md: str) -> str:
     ).strip()
 
 
-def implementation_prompt(user_request: str, requirements_summary: str, feedback: str, change_scope: str) -> str:
+def implementation_prompt(user_request: str, requirements_summary: str, feedback: str, change_scope: str, interface_contract_summary: str = "") -> str:
     return textwrap.dedent(
         f"""
         Produce implementation artifacts as plain text blocks (NO JSON):
@@ -107,6 +107,7 @@ def implementation_prompt(user_request: str, requirements_summary: str, feedback
         User request: {shrink(user_request, 500)}
         Requirements summary: {shrink(requirements_summary, 1200)}
         Change scope: {shrink(change_scope, 900)}
+        Interface contract: {shrink(interface_contract_summary or "none", 700)}
         Latest feedback: {shrink(feedback or 'none', 700)}
         """
     ).strip()
@@ -117,6 +118,7 @@ def deterministic_tests_prompt(
     implementation_summary: str,
     source_paths: list[str],
     feedback: str,
+    interface_contract_summary: str = "",
 ) -> str:
     src = ", ".join(source_paths[:8])
     return textwrap.dedent(
@@ -136,6 +138,7 @@ def deterministic_tests_prompt(
         Implementation summary: {shrink(implementation_summary, 600)}
         Source paths: {src}
         Latest feedback: {shrink(feedback or 'none', 600)}
+        Interface contract: {shrink(interface_contract_summary or "none", 700)}
         """
     ).strip()
 

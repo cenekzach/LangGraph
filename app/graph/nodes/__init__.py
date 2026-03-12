@@ -1,3 +1,6 @@
+from app.graph.nodes.interface_contract_builder import interface_contract_builder_node
+from app.graph.nodes.static_contract_checker import static_contract_checker_node
+from app.graph.nodes.terminal import terminal_node
 from app.graph.nodes.change_planner import change_planner_node
 from app.graph.nodes.implementor import implementor_node
 from app.graph.nodes.playtester import playtester_node
@@ -16,4 +19,7 @@ __all__ = [
     "playtester_node",
     "product_reviewer_node",
     "state_summarizer_node",
+    "interface_contract_builder_node",
+    "static_contract_checker_node",
+    "terminal_node",
 ]
