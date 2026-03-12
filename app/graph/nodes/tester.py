@@ -4,11 +4,12 @@ import logging
 
 from langchain_openai import ChatOpenAI
 
-from app.graph.nodes.common import invoke_json, safe_json_dumps
+from app.graph.nodes.common import invoke_text, safe_json_dumps
 from app.graph.state import WorkflowState
 from app.mcp.filesystem_client import FilesystemMCPClient
 from app.mcp.python_executor_client import PythonExecutorMCPClient
 from app.prompts.builders import tests_prompt
+from app.structured_output.parsers import parse_artifact_blocks, parse_tagged_summary
 
 logger = logging.getLogger(__name__)
 
@@ -22,24 +23,41 @@ def tester_node(
     pyexec_client: PythonExecutorMCPClient,
 ) -> WorkflowState:
     logger.info("tester:start")
-    generated = invoke_json(
+    raw = invoke_text(
         llm,
         tests_prompt(
             state["requirements_summary"],
             state["implementation_summary"],
             state["source_paths"],
+            state["latest_failure_summary"],
         ),
     )
 
+    generated_tests = parse_artifact_blocks(raw)
+    if not generated_tests:
+        failure_summary = "Invalid tester artifact format: expected FILE_PATH + fenced content blocks"
+        logger.warning("structured_output:validate tester artifacts failed")
+        payload = {
+            "tests_ok": False,
+            "test_summary": failure_summary,
+            "syntax": {},
+            "tests": {},
+            "failure_summary": failure_summary,
+            "test_paths": state["test_paths"],
+        }
+        fs_client.write_file(TEST_SUMMARY_PATH, safe_json_dumps(payload))
+        return {
+            **state,
+            "tests_ok": False,
+            "test_summary": failure_summary,
+            "latest_failure_summary": failure_summary,
+        }
+
     test_paths: list[str] = []
-    for item in generated.get("test_files", [])[:8]:
-        path = item.get("path", "")
-        content = item.get("content", "")
-        if not path or not isinstance(content, str):
-            continue
-        fs_client.write_file(path, content)
-        test_paths.append(path)
-        logger.info("tester:wrote %s", path)
+    for item in generated_tests[:8]:
+        fs_client.write_file(item["path"], item["content"])
+        test_paths.append(item["path"])
+        logger.info("tester:wrote %s", item["path"])
 
     syntax_paths = state["source_paths"] + test_paths
     syntax_result = pyexec_client.syntax_check(syntax_paths)
@@ -58,7 +76,7 @@ def tester_node(
 
     payload = {
         "tests_ok": tests_ok,
-        "test_summary": generated.get("test_summary", "tests generated and executed"),
+        "test_summary": parse_tagged_summary(raw, "TEST_SUMMARY") or "tests generated and executed",
         "syntax": syntax_result,
         "tests": test_result,
         "failure_summary": failure_summary,

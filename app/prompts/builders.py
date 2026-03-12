@@ -43,9 +43,16 @@ def requirements_review_prompt(requirements_md: str) -> str:
 def implementation_prompt(user_request: str, requirements_summary: str, feedback: str) -> str:
     return textwrap.dedent(
         f"""
-        Produce implementation plan JSON only with keys:
-        source_files: array of objects {{path, content}},
-        implementation_summary: short string.
+        Produce implementation artifacts as plain text blocks (NO JSON):
+
+        IMPLEMENTATION_SUMMARY: <one short line>
+        FILE_PATH: <relative path>
+        ```python
+        <file content>
+        ```
+
+        Repeat FILE_PATH + fenced content per file.
+        Do not wrap code in JSON strings.
 
         Keep scope minimal and deterministic. Python only.
 
@@ -56,18 +63,30 @@ def implementation_prompt(user_request: str, requirements_summary: str, feedback
     ).strip()
 
 
-def tests_prompt(requirements_summary: str, implementation_summary: str, source_paths: list[str]) -> str:
+def tests_prompt(
+    requirements_summary: str,
+    implementation_summary: str,
+    source_paths: list[str],
+    feedback: str,
+) -> str:
     src = ", ".join(source_paths[:8])
     return textwrap.dedent(
         f"""
-        Generate test assets JSON only with keys:
-        test_files: array of objects {{path, content}},
-        test_summary: short string.
+        Generate test artifacts as plain text blocks (NO JSON):
+
+        TEST_SUMMARY: <one short line>
+        FILE_PATH: <relative test path>
+        ```python
+        <pytest content>
+        ```
+
+        Repeat FILE_PATH + fenced content per file.
 
         Write compact pytest-style tests.
         Requirements summary: {shrink(requirements_summary, 1200)}
         Implementation summary: {shrink(implementation_summary, 600)}
         Source paths: {src}
+        Latest feedback: {shrink(feedback or 'none', 600)}
         """
     ).strip()
 
