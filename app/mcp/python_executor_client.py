@@ -87,7 +87,30 @@ class PythonExecutorMCPClient(FilesystemMCPClient):
 
     def syntax_check(self, paths: list[str]) -> dict[str, Any]:
         logger.info("python_executor:syntax_check_start file_count=%s", len(paths))
-        return self._call_tool(self._exec_binding.syntax_check_tool, {"paths": paths})
+        checks: list[dict[str, Any]] = []
+        for path in paths:
+            checks.append(self._call_tool(self._exec_binding.syntax_check_tool, {"path": path}))
+
+        failing = [check for check in checks if int(check.get("exit_code", 1)) != 0]
+        if not failing:
+            return {
+                "stdout": "",
+                "stderr": "",
+                "exit_code": 0,
+                "checks": checks,
+            }
+
+        errors = [
+            check.get("stderr") or check.get("stdout", "")
+            for check in failing
+            if (check.get("stderr") or check.get("stdout", ""))
+        ]
+        return {
+            "stdout": "\n".join(errors),
+            "stderr": "\n".join(errors),
+            "exit_code": 1,
+            "checks": checks,
+        }
 
     def run_tests(self, command: str = "python -m pytest -q") -> dict[str, Any]:
         logger.info("python_executor:run_tests_start command=%s", command)
@@ -116,6 +139,29 @@ class PythonExecutorMCPClient(FilesystemMCPClient):
     def _normalize_result(result: dict[str, Any]) -> dict[str, Any]:
         if isinstance(result.get("structuredContent"), dict):
             content = result["structuredContent"]
+
+            if "valid" in content and "path" in content:
+                valid = bool(content.get("valid"))
+                error_bits = [
+                    str(content.get("error_type", "")).strip(),
+                    str(content.get("error_message", "")).strip(),
+                ]
+                detail = ": ".join(part for part in error_bits if part)
+                if not detail and not valid:
+                    detail = "syntax check failed"
+
+                stdout = f"{content.get('path', '')}: ok" if valid else ""
+                stderr = detail if not valid else ""
+                return {
+                    "stdout": stdout,
+                    "stderr": stderr,
+                    "exit_code": 0 if valid else 1,
+                    "path": content.get("path", ""),
+                    "valid": valid,
+                    "line": content.get("line"),
+                    "offset": content.get("offset"),
+                }
+
             return {
                 "stdout": str(content.get("stdout", "")),
                 "stderr": str(content.get("stderr", "")),
