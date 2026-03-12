@@ -7,9 +7,10 @@ SCHEMAS: dict[str, dict[str, Any]] = {
     "requirements_review": {
         "required": {
             "requirements_ok": bool,
-            "issues": list,
-            "rewrite_instructions": str,
-            "summary": str,
+            "blocking_issues": list,
+            "non_blocking_issues": list,
+            "assumptions_to_record": list,
+            "review_summary": str,
         }
     },
     "product_review": {
