@@ -64,8 +64,10 @@ Any phase exceeding retry caps routes to terminal -> END with explicit failure s
 `PythonExecutorMCPClient` now returns stable objects:
 
 - `python_syntax_check(path)` -> `{ok, valid, path, error_type, error_message, line, offset, duration_ms}`
-- `python_run_tests(command)` -> `{ok, exit_code, stdout, stderr, timed_out, duration_ms}`
-- `python_run_script(...)` -> `{ok, exit_code, stdout, stderr, timed_out, duration_ms}`
+- `python_run_tests(command)` -> `{ok, exit_code, stdout, stderr, timed_out, duration_ms}` (pytest output is parsed so inner exit code is honored when wrapped in text)
+- `python_run_script(path, args, stdin_text, timeout_seconds, cwd)` -> `{ok, exit_code, stdout, stderr, timed_out, duration_ms}`
+
+Deterministic tests are written under `tests/` only, and pytest is invoked with `-p no:cacheprovider` to avoid cache writes in read-only workspaces.
 
 This avoids false positives where transport success was mistaken for test pass.
 

@@ -131,6 +131,8 @@ def deterministic_tests_prompt(
         <pytest content>
         ```
 
+        Write test files only under tests/ (for example tests/test_game.py). Never output /workspace/test_*.py.
+
         Include fixed scenario checks for interactive CLI contracts when relevant:
         prompt format, numeric-only menu contract, --actions replay, --exit semantics, known winning sequence if defined.
 

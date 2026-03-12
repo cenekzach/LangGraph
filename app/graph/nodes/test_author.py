@@ -10,7 +10,7 @@ from app.graph.nodes.common import invoke_text, safe_json_dumps
 from app.graph.state import WorkflowState
 from app.mcp.filesystem_client import FilesystemMCPClient
 from app.prompts.builders import deterministic_tests_prompt
-from app.structured_output.parsers import parse_artifact_blocks, parse_tagged_summary
+from app.structured_output.parsers import canonicalize_test_path, parse_artifact_blocks, parse_tagged_summary
 
 logger = logging.getLogger(__name__)
 
@@ -59,9 +59,13 @@ def test_author_node(
 
     test_paths: list[str] = []
     for item in generated_tests[:8]:
-        fs_client.write_file(item["path"], item["content"])
-        test_paths.append(item["path"])
-        logger.info("test_author:wrote %s", item["path"])
+        canonical_path = canonicalize_test_path(item["path"])
+        if not canonical_path.startswith("tests/"):
+            logger.info("test_author:skip_non_test_path path=%s", item["path"])
+            continue
+        fs_client.write_file(canonical_path, item["content"])
+        test_paths.append(canonical_path)
+        logger.info("test_author:wrote %s", canonical_path)
 
     return {
         **state,

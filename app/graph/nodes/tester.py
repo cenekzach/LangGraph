@@ -64,7 +64,7 @@ def tester_node(
     syntax_ok = int(syntax_result.get("exit_code", 1)) == 0
     logger.info("tester:syntax %s", "ok" if syntax_ok else "failed")
 
-    test_result = pyexec_client.run_tests("python -m pytest -q")
+    test_result = pyexec_client.run_tests("python -m pytest -q -p no:cacheprovider tests")
     tests_ok = syntax_ok and int(test_result.get("exit_code", 1)) == 0
     logger.info("tester:pytest %s", "passed" if tests_ok else "failed")
 

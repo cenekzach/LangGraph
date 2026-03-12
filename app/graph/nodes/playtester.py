@@ -95,9 +95,10 @@ def playtester_node(
 
 
 def _run_sequence(target: str, actions: list[int], pyexec_client: PythonExecutorMCPClient) -> dict:
-    seq = ",".join(str(a) for a in actions)
-    command = f"python {target} --actions {seq} --exit" if seq else f"python {target} --exit"
-    return pyexec_client.python_run_script(command, as_command=True)
+    args = ["--exit"]
+    if actions:
+        args = ["--actions", ",".join(str(a) for a in actions), "--exit"]
+    return pyexec_client.python_run_script(path=target, args=args)
 
 
 def _pick_target_script(paths: list[str]) -> str | None:
